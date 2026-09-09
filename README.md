@@ -1,4 +1,7 @@
 <p align="center">
+  <img src="docs/assets/logo.png" alt="EmComm Control Logo" width="200"/>
+</p>
+<p align="center">
   <a href="https://www.python.org/">
     <img src="https://img.shields.io/badge/Python-3.9%2B-blue" alt="Python Version">
   </a>

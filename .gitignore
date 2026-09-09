@@ -1,4 +1,22 @@
+# Python
 __pycache__/
-*.pyc
-.DS_Store
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+venv/
+.venv/
+
+# EmComm Control runtime state / logs
+mm_emcomm_control_data/
+mm_emcomm_control_state.json
+mm_emcomm_control_traffic.jsonl
+
+# Legacy SET Exercise Control state
 mm_arrl_set_data/
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

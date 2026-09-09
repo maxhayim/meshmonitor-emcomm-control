@@ -66,6 +66,14 @@ Starting with **v2.1.0**, EmComm Control includes an optional local web panel so
 
 The panel provides:
 
+### Operator view at a glance
+
+**🟡 EXERCISE**
+
+`[ 🟢 ACTIVATE LIVE ]` `[ 🟡 EXERCISE MODE ]` `[ 🔵 STATUS ]`
+
+The mode indicator makes it immediately clear whether the system is in **EXERCISE** or **LIVE** operation, while the three primary controls give operators one-click access to mode switching and current status.
+
 - **Activate LIVE** button with a second confirmation screen
 - **Switch to EXERCISE** button
 - **Refresh Status**

@@ -3,7 +3,7 @@
 #   name: EmComm Control
 #   emoji: 🚨
 #   language: Python
-__version__ = "2.0.1"
+__version__ = "2.1.0"
 
 """
 EmComm Control for MeshMonitor.
@@ -27,6 +27,9 @@ Local administration:
   mm_emcomm_control.py --inject <1-8>     # exercise mode only
   mm_emcomm_control.py --announce "TEXT"  # operator-supplied announcement
   mm_emcomm_control.py --reset
+
+Operator panel:
+  mm_emcomm_panel.py --open
 
 Safety:
 - LIVE mode can only be enabled locally, never by an inbound mesh message.

@@ -75,6 +75,19 @@
     <p class="muted">It complements, rather than replaces, an agency's incident-management, dispatch, records, and approved emergency communications systems.</p>
   ` }));
 
+  wrap.appendChild(el("section", { class: "card", html: `
+    <h2>Operator Control Panel — v2.1.0</h2>
+    <p>Operators can use a local browser UI instead of terminal commands to switch between LIVE and EXERCISE modes.</p>
+    <ul>
+      <li>Confirmed <strong>Activate LIVE</strong> button</li>
+      <li><strong>Switch to EXERCISE</strong> and <strong>Refresh Status</strong></li>
+      <li>Check-in, SITREP, traffic and event counters</li>
+      <li>Station and recent-log tables</li>
+      <li>LAN binding requires an access token</li>
+    </ul>
+    <pre>python3 /data/scripts/mm_emcomm_panel.py --open</pre>
+  ` }));
+
   const modes = el("div", { class: "grid" });
   modes.appendChild(el("section", { class: "card live", html: `
     <h2>LIVE mode</h2>

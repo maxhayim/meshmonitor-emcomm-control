@@ -23,3 +23,8 @@ The script logs operator-supplied traffic locally. Operators are responsible for
 ## Reporting a vulnerability
 
 For security-sensitive reports, contact the repository owner privately through an appropriate GitHub contact method instead of opening a public issue.
+
+
+## Operator Control Panel
+
+`mm_emcomm_panel.py` binds to `127.0.0.1` by default. A non-loopback bind is refused unless `MM_EMCOMM_PANEL_TOKEN` or `--token` is configured. For LAN/EOC deployment, use a long random token, a trusted management network, and preferably an authenticated TLS reverse proxy. Do not expose the panel directly to the public Internet.

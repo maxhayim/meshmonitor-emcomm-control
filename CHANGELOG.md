@@ -1,3 +1,18 @@
+## [2.1.0] - 2026-09-09
+
+### Added
+- Optional `mm_emcomm_panel.py` browser Operator Control Panel.
+- One-click confirmed LIVE / EXERCISE mode switching.
+- Dashboard counts for check-ins, SITREPs, traffic records, and events.
+- Checked-in station and recent operational-log tables.
+- Localhost-only default binding and required token authentication for LAN binds.
+- Native MeshMonitor script-action metadata proposal for future upstream support.
+
+### Changed
+- Version bumped to 2.1.0.
+- Documentation now includes local, EOC/LAN, and Docker-sidecar panel deployment examples.
+- Corrected documented Python baseline to 3.9+ because the runtime uses `zoneinfo`.
+
 ## [2.0.1] - 2026-09-09
 
 ### Changed

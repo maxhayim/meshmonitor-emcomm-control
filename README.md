@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://www.python.org/">
-    <img src="https://img.shields.io/badge/Python-3.8%2B-blue" alt="Python Version">
+    <img src="https://img.shields.io/badge/Python-3.9%2B-blue" alt="Python Version">
   </a>
   <a href="https://opensource.org/licenses/MIT">
     <img src="https://img.shields.io/badge/License-MIT-green" alt="License">
@@ -18,6 +18,7 @@ The project provides one runtime with two deliberately separated operating modes
 
 This repository contains:
 - **mm_emcomm_control.py** — the actual MeshMonitor Auto Responder / Timed Event script (runtime)
+- **mm_emcomm_panel.py** — optional browser-based operator control panel for LIVE / EXERCISE mode and status
 - **docs/** — GitHub Pages documentation (display only)
 
 ---
@@ -35,6 +36,7 @@ EmComm Control allows operators to:
 - Retain JSON / JSONL state and traffic logs for operational review or after-action review
 - Operate over Meshtastic, MeshCore, or other networks supported by MeshMonitor
 - Support EOC workflows at city/municipal, county/regional, and state levels
+- Provide optional one-click browser controls so EOC operators do not need terminal access to switch modes
 
 Design goals:
 - One tool for drills and real activations
@@ -55,6 +57,70 @@ EmComm Control can be deployed as a MeshMonitor communications-control layer in 
 - **State EOCs** — statewide communications coordination, regional status collection, and operator-entered message tracking
 
 The same installation can remain in **EXERCISE** mode for drills and SET activities, then be deliberately switched locally to **LIVE** mode for a real activation. EmComm Control is a communications-support and logging tool; it does not replace an agency's incident-management system, dispatch system, records policy, or approved emergency communications plan.
+
+---
+
+## Operator Control Panel
+
+Starting with **v2.1.0**, EmComm Control includes an optional local web panel so operators do not need to run command-line flags to change modes.
+
+The panel provides:
+
+- **Activate LIVE** button with a second confirmation screen
+- **Switch to EXERCISE** button
+- **Refresh Status**
+- **Reset Operation** with confirmation
+- Current station/check-in, SITREP, traffic, and event counts
+- Checked-in station table
+- Recent operational-log view
+
+The panel modifies the same state used by `mm_emcomm_control.py`; there is no separate mode database.
+
+### Local computer
+
+Place `mm_emcomm_panel.py` next to `mm_emcomm_control.py` in `/data/scripts/`, then run:
+
+```bash
+python3 /data/scripts/mm_emcomm_panel.py --open
+```
+
+The default address is:
+
+```text
+http://127.0.0.1:8787
+```
+
+By default the server listens only on localhost.
+
+### EOC / LAN access
+
+To make the panel reachable from authorized workstations on an EOC management LAN, **an access token is required**:
+
+```bash
+MM_EMCOMM_PANEL_TOKEN='use-a-long-random-token' \
+python3 /data/scripts/mm_emcomm_panel.py --host 0.0.0.0 --port 8787
+```
+
+The panel intentionally refuses a non-loopback bind if no token is configured. For production EOC use, keep it on a trusted management network and preferably place it behind an authenticated TLS reverse proxy.
+
+### Docker sidecar example
+
+If MeshMonitor uses the standard `meshmonitor-data` Docker volume, the panel can run as a small sidecar sharing the same `/data` volume:
+
+```bash
+docker run -d --name emcomm-panel --restart unless-stopped \
+  -p 8787:8787 \
+  -v meshmonitor-data:/data \
+  -e MM_EMCOMM_PANEL_TOKEN='use-a-long-random-token' \
+  python:3.12-alpine \
+  python3 /data/scripts/mm_emcomm_panel.py --host 0.0.0.0 --port 8787
+```
+
+If your MeshMonitor installation uses a different named volume or a bind mount, use that same `/data` source instead.
+
+> The web panel is an operator convenience interface. LIVE mode still requires deliberate confirmation, and EXERCISE injects remain blocked while LIVE.
+
+See [`docs/NATIVE_SCRIPT_ACTIONS_PROPOSAL.md`](docs/NATIVE_SCRIPT_ACTIONS_PROPOSAL.md) for the proposed future `mm_meta` native-button design.
 
 ---
 
@@ -109,6 +175,7 @@ Check the current mode:
 ## Repository layout
 <pre>
 ├── mm_emcomm_control.py    # Runtime script used by MeshMonitor
+├── mm_emcomm_panel.py      # Optional browser operator panel
 ├── docs/                   # GitHub Pages documentation
 │   ├── index.html
 │   └── index.js
@@ -346,6 +413,7 @@ This project follows semantic versioning in the same style as `meshmonitor-radio
 - **v1.0.0** — initial SET Exercise Control implementation
 - **v2.0.0** — renamed to EmComm Control; adds dual LIVE / EXERCISE operation and the new `mm_emcomm_control.py` runtime
 - **v2.0.1** — changes the MeshMonitor icon to 🚨 and documents city, county/regional, and state EOC deployments
+- **v2.1.0** — adds the optional browser Operator Control Panel for one-click LIVE / EXERCISE switching and operational status
 
 See [CHANGELOG.md](CHANGELOG.md) for details.
 

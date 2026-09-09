@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # mm_meta:
 #   name: EmComm Control
-#   emoji: 📡
+#   emoji: 🚨
 #   language: Python
-__version__ = "2.0.0"
+__version__ = "2.0.1"
 
 """
 EmComm Control for MeshMonitor.
@@ -11,6 +11,7 @@ EmComm Control for MeshMonitor.
 Dual-mode emergency-communications control:
 - EXERCISE mode: SET/drill traffic, simulated injects, explicit EXERCISE/SIMULATED labeling.
 - LIVE mode: real-world operator-entered check-ins, SITREPs, and message logging.
+- Suitable for emergency operations center (EOC) workflows at city/municipal, county/regional, and state levels.
 
 MeshMonitor Auto Responder patterns:
   ^EMCOMM\b

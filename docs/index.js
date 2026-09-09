@@ -52,8 +52,8 @@
   const wrap = el("main", { class: "wrap" });
 
   wrap.appendChild(el("section", { class: "hero", html: `
-    <h1>📡 EmComm Control</h1>
-    <p>Emergency communications control for MeshMonitor with deliberately separated LIVE and EXERCISE modes over Meshtastic, MeshCore, or any other mesh network MeshMonitor supports.</p>
+    <h1>🚨 EmComm Control</h1>
+    <p>Emergency communications control for MeshMonitor with deliberately separated LIVE and EXERCISE modes over Meshtastic and MeshCore, suitable for city, county/regional, and state Emergency Operations Center (EOC) workflows.</p>
     <div class="badges">
       <span class="pill">Python 3.8+</span>
       <span class="pill">MIT License</span>
@@ -62,6 +62,17 @@
       <span class="pill">LIVE + EXERCISE</span>
     </div>
     <p><a href="https://github.com/${REPO}">GitHub repository</a> · <a href="https://github.com/${REPO}/blob/main/${SCRIPT}">View runtime script</a></p>
+  ` }));
+
+  wrap.appendChild(el("section", { class: "card", html: `
+    <h2>Emergency Operations Center (EOC) use</h2>
+    <p>EmComm Control can support communications-control and logging workflows in government EOCs and supporting communications rooms.</p>
+    <ul>
+      <li><strong>City / municipal EOCs</strong> — local field teams, facilities, SITREPs and message logging</li>
+      <li><strong>County / regional EOCs</strong> — cross-jurisdiction coordination, shelters and regional resources</li>
+      <li><strong>State EOCs</strong> — statewide communications coordination and regional status collection</li>
+    </ul>
+    <p class="muted">It complements, rather than replaces, an agency's incident-management, dispatch, records, and approved emergency communications systems.</p>
   ` }));
 
   const modes = el("div", { class: "grid" });

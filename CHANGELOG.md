@@ -1,3 +1,10 @@
+## [2.0.1] - 2026-09-09
+
+### Changed
+- Changed the MeshMonitor script-picker emoji from 📡 to 🚨.
+- Added explicit deployment guidance for city/municipal, county/regional, and state Emergency Operations Centers (EOCs).
+- Expanded GitHub Pages and README positioning for government EOC communications-support workflows.
+
 # Changelog
 
 All notable changes to EmComm Control are documented here.

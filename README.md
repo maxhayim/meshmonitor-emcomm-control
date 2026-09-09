@@ -7,9 +7,9 @@
   </a>
 </p>
 
-# 📡 EmComm Control
+# 🚨 EmComm Control
 
-Emergency communications control Script for [**MeshMonitor**](https://github.com/Yeraze/MeshMonitor), supporting both **real-world operations** and **simulated exercises** over [**Meshtastic**](https://meshtastic.org/), [**MeshCore**](https://meshcore.co.uk/), or any other mesh network MeshMonitor supports.
+Emergency communications control script for [**MeshMonitor**](https://github.com/Yeraze/MeshMonitor), supporting both **real-world operations** and **simulated exercises** over [**Meshtastic**](https://meshtastic.org/), [**MeshCore**](https://meshcore.co.uk/), or any other mesh network MeshMonitor supports. EmComm Control can support emergency operations center (EOC) workflows for cities and municipalities, counties and regions, and state-level operations.
 
 The project provides one runtime with two deliberately separated operating modes:
 
@@ -34,6 +34,7 @@ EmComm Control allows operators to:
 - Run timed **simulated** exercise injects while in EXERCISE mode
 - Retain JSON / JSONL state and traffic logs for operational review or after-action review
 - Operate over Meshtastic, MeshCore, or other networks supported by MeshMonitor
+- Support EOC workflows at city/municipal, county/regional, and state levels
 
 Design goals:
 - One tool for drills and real activations
@@ -42,6 +43,18 @@ Design goals:
 - Local-only activation of LIVE mode
 - No external Python dependencies
 - Backwards compatibility with the original `SET` exercise command prefix
+
+---
+
+## Emergency Operations Center (EOC) use
+
+EmComm Control can be deployed as a MeshMonitor communications-control layer in an **Emergency Operations Center (EOC)** or supporting communications room. It is suitable for:
+
+- **City / municipal EOCs** — local incident coordination, field-team check-ins, SITREPs, and message logging
+- **County / regional EOCs** — coordination across municipalities, shelters, facilities, field teams, and regional communications resources
+- **State EOCs** — statewide communications coordination, regional status collection, and operator-entered message tracking
+
+The same installation can remain in **EXERCISE** mode for drills and SET activities, then be deliberately switched locally to **LIVE** mode for a real activation. EmComm Control is a communications-support and logging tool; it does not replace an agency's incident-management system, dispatch system, records policy, or approved emergency communications plan.
 
 ---
 
@@ -332,6 +345,7 @@ This project follows semantic versioning in the same style as `meshmonitor-radio
 
 - **v1.0.0** — initial SET Exercise Control implementation
 - **v2.0.0** — renamed to EmComm Control; adds dual LIVE / EXERCISE operation and the new `mm_emcomm_control.py` runtime
+- **v2.0.1** — changes the MeshMonitor icon to 🚨 and documents city, county/regional, and state EOC deployments
 
 See [CHANGELOG.md](CHANGELOG.md) for details.
 

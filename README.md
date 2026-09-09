@@ -7,41 +7,103 @@
   </a>
 </p>
 
-# 🚨 SET Exercise Control
+# 📡 EmComm Control
 
-An unofficial ARRL Simulated Emergency Test (SET) exercise-control Script for [**MeshMonitor**](https://github.com/Yeraze/MeshMonitor), supporting simulated emergency communications over [**Meshtastic**](https://meshtastic.org/), [**MeshCore**](https://meshcore.io), or any other mesh network MeshMonitor supports.
+Emergency communications control Script for [**MeshMonitor**](https://github.com/Yeraze/MeshMonitor), supporting both **real-world operations** and **simulated exercises** over [**Meshtastic**](https://meshtastic.org/), [**MeshCore**](https://meshcore.co.uk/), or any other mesh network MeshMonitor supports.
+
+The project provides one runtime with two deliberately separated operating modes:
+
+- **LIVE** — operator-entered real-world check-ins, SITREPs, traffic logging, status, and announcements
+- **EXERCISE** — drills and simulated incidents, including ARRL® Simulated Emergency Test (SET) use and timed exercise injects
 
 This repository contains:
-- **mm_arrl_set.py** — the actual MeshMonitor Auto Responder / Timed Event script (runtime)
+- **mm_emcomm_control.py** — the actual MeshMonitor Auto Responder / Timed Event script (runtime)
 - **docs/** — GitHub Pages documentation (display only)
 
 ---
 
 ## What this does
 
-This MeshMonitor script allows operators to:
+EmComm Control allows operators to:
 
 - Check in with callsign, location, power source, and role
-- Submit simulated SITREPs
-- Log simulated message traffic
-- Request current exercise statistics
-- Run scheduled exercise injects using MeshMonitor Timed Events
-- Retain exercise logs for after-action review
+- Submit and log SITREPs
+- Log addressed message traffic with unique traffic IDs
+- Request current operational statistics
+- Send operator-supplied announcements
+- Run timed **simulated** exercise injects while in EXERCISE mode
+- Retain JSON / JSONL state and traffic logs for operational review or after-action review
+- Operate over Meshtastic, MeshCore, or other networks supported by MeshMonitor
 
-Every generated exercise message is explicitly marked **EXERCISE** and/or **SIMULATED**.
+Design goals:
+- One tool for drills and real activations
+- Explicit separation between LIVE and EXERCISE traffic
+- No simulated incident generation while LIVE
+- Local-only activation of LIVE mode
+- No external Python dependencies
+- Backwards compatibility with the original `SET` exercise command prefix
+
+---
+
+## Operating modes
+
+### EXERCISE mode
+
+EXERCISE is the default mode.
+
+All exercise responses are explicitly labeled **EXERCISE** and/or **SIMULATED**. Timed simulated injects are available only in this mode.
+
+Use EXERCISE mode for:
+- ARRL® Simulated Emergency Test (SET)
+- ARES / club exercises
+- Served-agency drills
+- Mesh communications testing
+- Training and after-action evaluation
+
+### LIVE mode
+
+LIVE mode is intended for actual emergency-communications operations.
+
+LIVE mode:
+- Accepts only the `EMCOMM` command prefix
+- Logs only information supplied by operators
+- Blocks simulated exercise injects
+- Does not invent or infer incident conditions
+- Cannot be enabled by an inbound mesh message
+
+Enable LIVE mode **locally on the MeshMonitor host**:
+
+```bash
+/data/scripts/mm_emcomm_control.py --mode live --confirm-live
+```
+
+Return to EXERCISE mode:
+
+```bash
+/data/scripts/mm_emcomm_control.py --mode exercise
+```
+
+Check the current mode:
+
+```bash
+/data/scripts/mm_emcomm_control.py --mode status
+```
+
+> Real-world radio traffic may be visible to other network participants. Follow applicable laws, regulations, local plans, served-agency procedures, and good information-security practices. Avoid transmitting sensitive information over open or untrusted RF networks.
 
 ---
 
 ## Repository layout
 <pre>
-├── mm_arrl_set.py          # Runtime script used by MeshMonitor
-├── docs/
+├── mm_emcomm_control.py    # Runtime script used by MeshMonitor
+├── docs/                   # GitHub Pages documentation
 │   ├── index.html
 │   └── index.js
 ├── ISSUE_TEMPLATE/
 ├── CODE_OF_CONDUCT.md
 ├── CONTRIBUTING.md
 ├── SECURITY.md
+├── CHANGELOG.md
 ├── LICENSE
 └── README.md
 </pre>
@@ -52,92 +114,234 @@ Every generated exercise message is explicitly marked **EXERCISE** and/or **SIMU
 
 ### Use this file in MeshMonitor
 
-mm_arrl_set.py
+`mm_emcomm_control.py`
 
 This is the **only file** MeshMonitor should execute.
 
 ### Do NOT run these files
 
-docs/index.html  
-docs/index.js
+`docs/index.html`  
+`docs/index.js`
 
 These files only display documentation on GitHub Pages.
 
 ---
 
-## Installing mm_arrl_set.py
+## Installing mm_emcomm_control.py
 
-The script must exist inside the MeshMonitor environment at:
+Copy the runtime script into:
 
-/data/scripts/mm_arrl_set.py
+```text
+/data/scripts/mm_emcomm_control.py
+```
 
 Make it executable:
 
-chmod +x /data/scripts/mm_arrl_set.py
+```bash
+chmod +x /data/scripts/mm_emcomm_control.py
+```
 
 ---
 
 ## MeshMonitor Auto Responder configuration
 
-Create one Auto Responder rule.
+Create two Auto Responder rules pointing to the same runtime script.
+
+### Rule 1 — EmComm commands
 
 Trigger regex:
 
-^SET\b
+```regex
+^EMCOMM\b
+```
 
 Action: Script  
 Script path:
 
-/data/scripts/mm_arrl_set.py
+```text
+/data/scripts/mm_emcomm_control.py
+```
+
+### Rule 2 — Legacy SET exercise commands
+
+Trigger regex:
+
+```regex
+^SET\b
+```
+
+Action: Script  
+Script path:
+
+```text
+/data/scripts/mm_emcomm_control.py
+```
+
+The `SET` prefix is accepted only in EXERCISE mode. LIVE mode requires `EMCOMM`.
 
 ---
 
-## Commands
+## Mesh commands
 
-SET CHECKIN <CALLSIGN> <LOCATION> <POWER> <ROLE>  
-SET SITREP <LOCATION> <STATUS>  
-SET TRAFFIC <TO> <TEXT>  
-SET STATUS  
-SET HELP
+```text
+EMCOMM CHECKIN <CALLSIGN> <LOCATION> <POWER> <ROLE>
+EMCOMM SITREP <LOCATION> <STATUS>
+EMCOMM TRAFFIC <TO> <TEXT>
+EMCOMM STATUS
+EMCOMM HELP
+```
+
+### Example — LIVE or EXERCISE
+
+```text
+EMCOMM CHECKIN W4ABC MIAMI-EOC BATTERY NCS
+EMCOMM SITREP SHELTER-1 COMMERCIAL-POWER-DOWN RF-LINK-GOOD
+EMCOMM TRAFFIC EOC REQUEST-20-CASES-WATER
+EMCOMM STATUS
+```
+
+### Legacy exercise compatibility
+
+While in EXERCISE mode, the original syntax remains valid:
+
+```text
+SET CHECKIN W4ABC MIAMI-EOC BATTERY NCS
+SET SITREP SHELTER-1 RF-LINK-GOOD
+SET TRAFFIC EOC TEST-MESSAGE
+SET STATUS
+```
 
 ---
 
-## Example usage
+## Local administration
 
-SET CHECKIN W4ABC MIAMI-EOC BATTERY NCS  
-SET SITREP SHELTER-1 COMMERCIAL-POWER-DOWN RF-LINK-GOOD  
-SET TRAFFIC EOC REQUEST-20-CASES-WATER  
-SET STATUS  
-SET HELP
+### Send an operator-supplied announcement
+
+In either mode:
+
+```bash
+/data/scripts/mm_emcomm_control.py --announce "NCS requests all field stations check in"
+```
+
+The script labels the announcement according to the active mode. In EXERCISE mode it is also marked simulated.
+
+### Reset counters and current operational state
+
+```bash
+/data/scripts/mm_emcomm_control.py --reset
+```
+
+Reset preserves the current LIVE / EXERCISE mode.
 
 ---
 
-## MeshMonitor Timed Events
+## EXERCISE mode timed events
 
-Use the same script with:
+Simulated injects are available only in EXERCISE mode:
 
---inject 1  
---inject 2  
---inject 3  
---inject 4  
---inject 5  
---inject 6  
---inject 7  
+```text
+--inject 1
+--inject 2
+--inject 3
+--inject 4
+--inject 5
+--inject 6
+--inject 7
 --inject 8
+```
+
+Example sequence:
+
+```text
+09:00  Inject 1 — exercise begins / check-ins
+09:15  Inject 2 — simulated commercial power failure
+09:30  Inject 3 — simulated cellular / Internet degradation
+10:00  Inject 4 — simulated served-agency SITREP request
+10:30  Inject 5 — simulated message-traffic phase
+11:00  Inject 6 — simulated formal-message / ICS-213 phase
+11:30  Inject 7 — simulated partial restoration
+12:00  Inject 8 — end of exercise
+```
+
+If an inject is invoked while LIVE, the script refuses to transmit it.
 
 ---
 
-## Resetting the exercise
+## State and logs
 
-/data/scripts/mm_arrl_set.py --reset
+EmComm Control stores runtime data under:
+
+```text
+/data/scripts/mm_emcomm_control_data/
+```
+
+Files:
+
+```text
+state.json
+traffic.jsonl
+```
+
+The state file stores the current mode, participants/stations, counts, and exercise state. The JSONL log records check-ins, SITREPs, message traffic, announcements, mode changes, and exercise injects.
+
+### Migration from SET Exercise Control
+
+If the previous `/data/scripts/mm_arrl_set_data/` directory exists and the new EmComm state does not yet exist, v2 performs a best-effort one-time migration of the previous state and traffic log.
+
+The old runtime filename `mm_arrl_set.py` is replaced by `mm_emcomm_control.py`.
 
 ---
 
-## Trademark Notice
+## Maintenance / Reinstall (Advanced)
+
+These steps are only required when upgrading, troubleshooting, or resetting an installation.
+
+### Disable EmComm Control in MeshMonitor
+
+1. Open **MeshMonitor**
+2. Go to **Info → Automation**
+3. Disable Auto Responder rules pointing to `mm_emcomm_control.py`
+4. Disable Timed Events pointing to the script if applicable
+5. Click **Save**
+
+### Remove runtime and state
+
+Inside the MeshMonitor container:
+
+```bash
+docker exec -it meshmonitor sh
+rm -f /data/scripts/mm_emcomm_control.py
+rm -rf /data/scripts/mm_emcomm_control_data
+exit
+```
+
+### Reinstall
+
+1. Copy `mm_emcomm_control.py` to `/data/scripts/`
+2. Make it executable
+3. Recreate / re-enable the `^EMCOMM\b` rule
+4. Optionally retain `^SET\b` for exercise compatibility
+5. Recreate exercise Timed Events if desired
+6. Click **Save**
+
+---
+
+## Versioning
+
+This project follows semantic versioning in the same style as `meshmonitor-radio-id-qth`.
+
+- **v1.0.0** — initial SET Exercise Control implementation
+- **v2.0.0** — renamed to EmComm Control; adds dual LIVE / EXERCISE operation and the new `mm_emcomm_control.py` runtime
+
+See [CHANGELOG.md](CHANGELOG.md) for details.
+
+---
+
+## ARRL trademark notice
 
 ARRL® and related names and marks are trademarks of the American Radio Relay League, Incorporated.
 
-This project is an independent, community-developed tool intended for simulated emergency communications exercises. It is not affiliated with, sponsored by, endorsed by, or officially maintained by ARRL.
+EmComm Control is an independent, community-developed MeshMonitor tool. It may be used as part of an ARRL Simulated Emergency Test (SET), but it is **not affiliated with, sponsored by, endorsed by, or officially maintained by ARRL**.
 
 No ARRL logos or graphical trademarks are included with this project.
 

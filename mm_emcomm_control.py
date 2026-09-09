@@ -3,7 +3,7 @@
 #   name: EmComm Control
 #   emoji: 🚨
 #   language: Python
-__version__ = "2.1.0"
+__version__ = "2.2.0"
 
 """
 EmComm Control for MeshMonitor.
@@ -26,6 +26,8 @@ Local administration:
   mm_emcomm_control.py --mode status
   mm_emcomm_control.py --inject <1-8>     # exercise mode only
   mm_emcomm_control.py --announce "TEXT"  # operator-supplied announcement
+  mm_emcomm_control.py --checkout <CALLSIGN>  # local roster correction
+  mm_emcomm_control.py --export [DIR]     # after-action CSV + summary export
   mm_emcomm_control.py --reset
 
 Operator panel:
@@ -38,6 +40,7 @@ Safety:
 """
 
 import argparse
+import csv
 import json
 import os
 import re
@@ -235,7 +238,9 @@ def help_text(state):
     label = mode_label(state["mode"])
     base = (
         f"{label} commands: EMCOMM CHECKIN <CALLSIGN> <LOCATION> <POWER> <ROLE> | "
-        "EMCOMM SITREP <LOCATION> <STATUS> | EMCOMM TRAFFIC <TO> <TEXT> | "
+        "EMCOMM CHECKOUT <CALLSIGN> | "
+        "EMCOMM SITREP <LOCATION> <STATUS> | "
+        "EMCOMM TRAFFIC <TO> [ROUTINE|PRIORITY|IMMEDIATE] <TEXT> | "
         "EMCOMM STATUS | EMCOMM HELP"
     )
     if state["mode"] == "exercise":
@@ -302,25 +307,47 @@ def handle_traffic(body, from_node, state):
     m = re.match(r"^TRAFFIC\s+(\S+)\s+(.+)$", body, re.I)
     if not m:
         caution = "Use exercise data only." if state["mode"] == "exercise" else "Avoid sensitive information on open/untrusted RF networks."
-        return f"{response_prefix(state)} format: EMCOMM TRAFFIC <TO> <TEXT>. {caution}"
+        return f"{response_prefix(state)} format: EMCOMM TRAFFIC <TO> [ROUTINE|PRIORITY|IMMEDIATE] <TEXT>. {caution}"
     destination = m.group(1).upper()
-    traffic_body = normalize(m.group(2))
+    rest = m.group(2)
+    precedence = "ROUTINE"
+    pm = re.match(r"^(ROUTINE|PRIORITY|IMMEDIATE)\s+(.+)$", rest, re.I)
+    if pm:
+        precedence = pm.group(1).upper()
+        traffic_body = normalize(pm.group(2))
+    else:
+        traffic_body = normalize(rest)
     state["traffic_count"] += 1
     state["events"] += 1
     traffic_id = f"EX-{state['traffic_count']:03d}" if state["mode"] == "exercise" else f"EC-{state['traffic_count']:03d}"
     save_state(state)
     log_event("traffic", from_node, body, {
-        "traffic_id": traffic_id, "to": destination, "body": traffic_body,
+        "traffic_id": traffic_id, "to": destination, "precedence": precedence, "body": traffic_body,
     })
     if state["mode"] == "exercise":
         return (
-            f"EXERCISE ACK {traffic_id} to {destination}. Logged for exercise review; "
+            f"EXERCISE ACK {traffic_id} [{precedence}] to {destination}. Logged for exercise review; "
             "delivery to the named recipient is not guaranteed. SIMULATED."
         )
     return (
-        f"LIVE ACK {traffic_id} to {destination}. Logged; "
+        f"LIVE ACK {traffic_id} [{precedence}] to {destination}. Logged; "
         "this acknowledgment does not confirm delivery to the named recipient."
     )
+
+
+def handle_checkout(body, from_node, state):
+    m = re.match(r"^CHECKOUT\s+(\S+)$", body, re.I)
+    if not m:
+        return f"{response_prefix(state)} format: EMCOMM CHECKOUT <CALLSIGN>."
+    callsign = m.group(1).upper()
+    if callsign not in state["participants"]:
+        return f"{response_prefix(state)} CHECKOUT: {callsign} not on roster."
+    del state["participants"][callsign]
+    state["events"] += 1
+    save_state(state)
+    log_event("checkout", from_node, body, {"callsign": callsign})
+    suffix = " SIMULATED." if state["mode"] == "exercise" else ""
+    return f"{response_prefix(state)} CHECKOUT {callsign} removed from roster.{suffix}"
 
 
 def handle_status(state):
@@ -354,6 +381,8 @@ def handle_message():
         response = help_text(state)
     elif re.match(r"^CHECKIN\b", body, re.I):
         response = handle_checkin(body, from_node, state)
+    elif re.match(r"^CHECKOUT\b", body, re.I):
+        response = handle_checkout(body, from_node, state)
     elif re.match(r"^SITREP\b", body, re.I):
         response = handle_sitrep(body, from_node, state)
     elif re.match(r"^TRAFFIC\b", body, re.I):
@@ -429,6 +458,71 @@ def reset_operation():
     emit(f"{mode_label(mode)} EmComm Control state reset.")
 
 
+def checkout_participant(callsign):
+    state = load_state()
+    callsign = normalize(callsign).upper()
+    if callsign not in state["participants"]:
+        emit(f"CHECKOUT: {callsign} not on roster.")
+        return
+    del state["participants"][callsign]
+    state["events"] += 1
+    save_state(state)
+    log_event("checkout", "", f"Local checkout: {callsign}", {"callsign": callsign, "source": "cli"})
+    emit(f"{mode_label(state['mode'])} CHECKOUT {callsign} removed from roster.")
+
+
+TRAFFIC_LOG_FIELDS = [
+    "time", "mode", "kind", "from_node", "callsign", "location", "power", "role",
+    "status", "sitrep_number", "to", "precedence", "traffic_id", "body", "inject", "message",
+]
+
+
+def export_bundle(out_dir=None):
+    """Write roster.csv, traffic_log.csv, and summary.txt for after-action review."""
+    state = load_state()
+    out = Path(out_dir) if out_dir else DATA_DIR / f"export_{datetime.now(LOCAL_TZ).strftime('%Y%m%dT%H%M%S')}"
+    out.mkdir(parents=True, exist_ok=True)
+
+    with (out / "roster.csv").open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["callsign", "location", "power", "role", "node", "time"])
+        for callsign, info in sorted(state.get("participants", {}).items()):
+            writer.writerow([
+                callsign, info.get("location", ""), info.get("power", ""),
+                info.get("role", ""), info.get("node", ""), info.get("time", ""),
+            ])
+
+    with (out / "traffic_log.csv").open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=TRAFFIC_LOG_FIELDS, extrasaction="ignore")
+        writer.writeheader()
+        if LOG_FILE.exists():
+            with LOG_FILE.open("r", encoding="utf-8") as lf:
+                for line in lf:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except Exception:
+                        continue
+                    if isinstance(record, dict):
+                        writer.writerow(record)
+
+    with (out / "summary.txt").open("w", encoding="utf-8") as f:
+        f.write("EmComm Control after-action export\n")
+        f.write(f"Generated: {now_iso()}\n")
+        f.write(f"Mode: {mode_label(state.get('mode'))}\n")
+        f.write(f"Exercise/operation name: {state.get('exercise', '')}\n")
+        f.write(f"Started: {state.get('started') or 'n/a'}\n")
+        f.write(f"Ended: {state.get('ended') or 'n/a'}\n")
+        f.write(f"Stations checked in: {len(state.get('participants', {}))}\n")
+        f.write(f"SITREPs: {state.get('sitreps', 0)}\n")
+        f.write(f"Traffic records: {state.get('traffic_count', 0)}\n")
+        f.write(f"Total logged events: {state.get('events', 0)}\n")
+
+    return out
+
+
 def main():
     parser = argparse.ArgumentParser(add_help=True)
     parser.add_argument("--mode", choices=["exercise", "live", "status"])
@@ -436,8 +530,16 @@ def main():
     parser.add_argument("--inject", type=int, help="Send a numbered exercise inject (EXERCISE mode only).")
     parser.add_argument("--announce", help="Send an operator-supplied announcement in the current mode.")
     parser.add_argument("--reset", action="store_true", help="Reset counters/state while preserving current mode.")
+    parser.add_argument("--checkout", help="Remove a callsign from the roster (local correction).")
+    parser.add_argument(
+        "--export", nargs="?", const="", metavar="DIR",
+        help="Export roster/traffic CSV + summary for after-action review. Optional output directory.",
+    )
     args = parser.parse_args()
-    selected = sum([args.mode is not None, args.inject is not None, args.announce is not None, args.reset])
+    selected = sum([
+        args.mode is not None, args.inject is not None, args.announce is not None,
+        args.reset, args.checkout is not None, args.export is not None,
+    ])
     if selected > 1:
         emit("Choose only one administrative action at a time.")
         return
@@ -449,6 +551,12 @@ def main():
         handle_announce(args.announce)
     elif args.reset:
         reset_operation()
+    elif args.checkout is not None:
+        checkout_participant(args.checkout)
+    elif args.export is not None:
+        out = export_bundle(args.export or None)
+        log_event("export", "", f"After-action export written to {out}")
+        emit(f"After-action export written to {out}")
     else:
         handle_message()
 

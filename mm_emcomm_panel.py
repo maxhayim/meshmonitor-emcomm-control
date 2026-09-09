@@ -12,9 +12,11 @@ Security defaults:
 """
 
 import argparse
+import csv
 import hashlib
 import hmac
 import html
+import io
 import json
 import os
 import sys
@@ -26,7 +28,7 @@ from urllib.parse import parse_qs, quote, urlsplit
 
 import mm_emcomm_control as control
 
-PANEL_VERSION = "2.1.0"
+PANEL_VERSION = "2.2.0"
 DEFAULT_HOST = os.getenv("MM_EMCOMM_PANEL_HOST", "127.0.0.1")
 DEFAULT_PORT = int(os.getenv("MM_EMCOMM_PANEL_PORT", "8787"))
 DEFAULT_TOKEN = os.getenv("MM_EMCOMM_PANEL_TOKEN", "")
@@ -95,6 +97,34 @@ def panel_reset():
     return f"{mode_name(mode)} counters and current operational state reset."
 
 
+def panel_checkout(callsign):
+    callsign = (callsign or "").strip().upper()
+    state = control.load_state()
+    participants = state.get("participants", {}) or {}
+    if callsign not in participants:
+        return f"{callsign} not found on roster."
+    del participants[callsign]
+    state["participants"] = participants
+    state["events"] = int(state.get("events", 0)) + 1
+    control.save_state(state)
+    control.log_event(
+        "checkout",
+        "web-panel",
+        f"Removed {callsign} from roster",
+        {"callsign": callsign, "source": "operator_control_panel"},
+    )
+    return f"Removed {callsign} from roster."
+
+
+def build_csv(rows, fieldnames):
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    for row in rows:
+        writer.writerow(row)
+    return buf.getvalue()
+
+
 def esc(value):
     return html.escape(str(value if value is not None else ""), quote=True)
 
@@ -143,6 +173,15 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+    def send_csv(self, filename, data):
+        payload = data.encode("utf-8")
+        self.send_response(200)
+        self.common_headers("text/csv; charset=utf-8")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
 
     def redirect(self, path):
         self.send_response(303)
@@ -225,9 +264,10 @@ class Handler(BaseHTTPRequestHandler):
         notice = f'<div class="notice good">{esc(message)}</div>' if message else ""
 
         station_rows = "".join(
-            f"<tr><td><strong>{esc(call)}</strong></td><td>{esc(info.get('location'))}</td><td>{esc(info.get('power'))}</td><td>{esc(info.get('role'))}</td><td>{esc(info.get('time'))}</td></tr>"
+            f"<tr><td><strong>{esc(call)}</strong></td><td>{esc(info.get('location'))}</td><td>{esc(info.get('power'))}</td><td>{esc(info.get('role'))}</td><td>{esc(info.get('time'))}</td>"
+            f"<td><form method=\"post\" action=\"/action/checkout\"><input type=\"hidden\" name=\"callsign\" value=\"{esc(call)}\"><button class=\"warn\" type=\"submit\">Remove</button></form></td></tr>"
             for call, info in sorted(participants.items())
-        ) or '<tr><td colspan="5" class="muted">No stations checked in.</td></tr>'
+        ) or '<tr><td colspan="6" class="muted">No stations checked in.</td></tr>'
 
         event_rows = "".join(
             f"<tr><td>{esc(item.get('time'))}</td><td>{esc(item.get('mode'))}</td><td>{esc(item.get('kind'))}</td><td>{esc(item.get('from_node'))}</td><td>{esc(item.get('message'))}</td></tr>"
@@ -255,8 +295,9 @@ class Handler(BaseHTTPRequestHandler):
           <div class="card"><div class="muted">Traffic records</div><div class="metric">{int(state.get('traffic_count',0))}</div></div>
           <div class="card"><div class="muted">Logged events</div><div class="metric">{int(state.get('events',0))}</div></div>
         </section>
-        <section class="card"><h2>Check-ins</h2><div class="scroll"><table><thead><tr><th>Callsign</th><th>Location</th><th>Power</th><th>Role</th><th>Last check-in</th></tr></thead><tbody>{station_rows}</tbody></table></div></section>
+        <section class="card"><h2>Check-ins</h2><div class="scroll"><table><thead><tr><th>Callsign</th><th>Location</th><th>Power</th><th>Role</th><th>Last check-in</th><th>Actions</th></tr></thead><tbody>{station_rows}</tbody></table></div><p class="muted">Removing a station only corrects the roster; it does not notify the station and can be redone by checking in again.</p></section>
         <section class="card"><h2>Recent operational log</h2><div class="scroll"><table><thead><tr><th>Time</th><th>Mode</th><th>Type</th><th>Source</th><th>Details</th></tr></thead><tbody>{event_rows}</tbody></table></div></section>
+        <section class="card"><h2>After-action export</h2><p class="muted">Download the current roster and full traffic/event log as CSV for drill or incident review.</p><div class="actions"><a class="button primary" href="/export/roster.csv">Download roster CSV</a><a class="button primary" href="/export/traffic.csv">Download traffic log CSV</a></div></section>
         <section class="card"><h2>Operational note</h2><p>This panel changes EmComm Control state and displays its local logs. It does not replace an EOC incident-management, dispatch, CAD, records, or approved emergency communications system.</p><p class="muted">For LAN access, run with an access token and place the panel only on a trusted management network or behind an authenticated TLS reverse proxy.</p></section>
         """
         return self.layout("Dashboard", body)
@@ -293,6 +334,13 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/login":
             self.send_html(self.login_page())
             return
+        if parsed.path == "/logout":
+            self.send_response(303)
+            self.send_header("Location", "/login")
+            self.send_header("Set-Cookie", f"{COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return
         if not self.require_auth():
             return
         if parsed.path == "/api/status":
@@ -307,8 +355,33 @@ class Handler(BaseHTTPRequestHandler):
                 "events": int(state.get("events", 0)),
             })
             return
-        if parsed.path == "/logout":
-            self.redirect("/login")
+        if parsed.path == "/export/roster.csv":
+            state = control.load_state()
+            rows = [
+                {
+                    "callsign": call, "location": info.get("location", ""),
+                    "power": info.get("power", ""), "role": info.get("role", ""),
+                    "node": info.get("node", ""), "time": info.get("time", ""),
+                }
+                for call, info in sorted((state.get("participants", {}) or {}).items())
+            ]
+            self.send_csv("emcomm_roster.csv", build_csv(rows, ["callsign", "location", "power", "role", "node", "time"]))
+            return
+        if parsed.path == "/export/traffic.csv":
+            rows = []
+            if control.LOG_FILE.exists():
+                with control.LOG_FILE.open("r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            item = json.loads(line)
+                        except Exception:
+                            continue
+                        if isinstance(item, dict):
+                            rows.append(item)
+            self.send_csv("emcomm_traffic_log.csv", build_csv(rows, control.TRAFFIC_LOG_FIELDS))
             return
         if parsed.path != "/":
             self.send_html(self.layout("Not found", '<section class="card"><h1>Not found</h1><a href="/">Dashboard</a></section>'), status=404)
@@ -373,6 +446,14 @@ class Handler(BaseHTTPRequestHandler):
                 self.redirect("/?msg=" + quote(msg))
             except Exception as exc:
                 self.send_html(self.layout("Error", f'<section class="card"><h1>Reset failed</h1><p>{esc(exc)}</p><a href="/">Return</a></section>'), status=500)
+            return
+        if parsed.path == "/action/checkout":
+            callsign = fields.get("callsign", [""])[0]
+            try:
+                msg = panel_checkout(callsign)
+                self.redirect("/?msg=" + quote(msg))
+            except Exception as exc:
+                self.send_html(self.layout("Error", f'<section class="card"><h1>Checkout failed</h1><p>{esc(exc)}</p><a href="/">Return</a></section>'), status=500)
             return
         self.send_html(self.layout("Not found", '<section class="card"><h1>Not found</h1></section>'), status=404)
 

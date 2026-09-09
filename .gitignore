@@ -6,6 +6,7 @@ __pycache__/
 .Python
 venv/
 .venv/
+.pytest_cache/
 
 # EmComm Control runtime state / logs
 mm_emcomm_control_data/

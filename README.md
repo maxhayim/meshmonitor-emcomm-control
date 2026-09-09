@@ -276,19 +276,23 @@ The `SET` prefix is accepted only in EXERCISE mode. LIVE mode requires `EMCOMM`.
 
 ```text
 EMCOMM CHECKIN <CALLSIGN> <LOCATION> <POWER> <ROLE>
+EMCOMM CHECKOUT <CALLSIGN>
 EMCOMM SITREP <LOCATION> <STATUS>
-EMCOMM TRAFFIC <TO> <TEXT>
+EMCOMM TRAFFIC <TO> [ROUTINE|PRIORITY|IMMEDIATE] <TEXT>
 EMCOMM STATUS
 EMCOMM HELP
 ```
+
+`EMCOMM TRAFFIC` precedence is optional and defaults to `ROUTINE` when omitted; it is recorded in the traffic log and echoed back in the acknowledgment.
 
 ### Example — LIVE or EXERCISE
 
 ```text
 EMCOMM CHECKIN W4ABC MIAMI-EOC BATTERY NCS
 EMCOMM SITREP SHELTER-1 COMMERCIAL-POWER-DOWN RF-LINK-GOOD
-EMCOMM TRAFFIC EOC REQUEST-20-CASES-WATER
+EMCOMM TRAFFIC EOC PRIORITY REQUEST-20-CASES-WATER
 EMCOMM STATUS
+EMCOMM CHECKOUT W4ABC
 ```
 
 ### Legacy exercise compatibility
@@ -321,6 +325,21 @@ The script labels the announcement according to the active mode. In EXERCISE mod
 ```bash
 /data/scripts/mm_emcomm_control.py --reset
 ```
+
+### Correct the roster locally
+
+```bash
+/data/scripts/mm_emcomm_control.py --checkout W4ABC
+```
+
+### Export for after-action review
+
+```bash
+/data/scripts/mm_emcomm_control.py --export
+/data/scripts/mm_emcomm_control.py --export /path/to/output-dir
+```
+
+Writes `roster.csv`, `traffic_log.csv`, and `summary.txt`. With no directory given, the export is written under the script's data directory, timestamped. The operator panel offers the same CSV files as one-click downloads.
 
 Reset preserves the current LIVE / EXERCISE mode.
 
@@ -425,6 +444,7 @@ This project follows semantic versioning in the same style as `meshmonitor-radio
 - **v2.0.0** — renamed to EmComm Control; adds dual LIVE / EXERCISE operation and the new `mm_emcomm_control.py` runtime
 - **v2.0.1** — changes the MeshMonitor icon to 🚨 and documents city, county/regional, and state EOC deployments
 - **v2.1.0** — adds the optional browser Operator Control Panel for one-click LIVE / EXERCISE switching and operational status
+- **v2.2.0** — adds roster checkout, traffic precedence, and after-action CSV export (CLI and panel)
 
 See [CHANGELOG.md](CHANGELOG.md) for details.
 

@@ -12,6 +12,7 @@ Contributions are welcome.
 6. Keep the runtime Python standard-library only unless a dependency is clearly justified.
 7. Test changes with representative MeshMonitor environment variables.
 8. Do not include credentials, private node databases, real emergency traffic, or sensitive operational data in commits.
+9. Run the test suite (`pip install pytest && pytest`) and add coverage for new behavior, especially anything touching LIVE/EXERCISE mode gating.
 
 ## Pull requests
 

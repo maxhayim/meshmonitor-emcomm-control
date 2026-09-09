@@ -1,3 +1,15 @@
+## [2.2.0] - 2026-09-09
+
+### Added
+- `EMCOMM CHECKOUT <CALLSIGN>` mesh command, `--checkout` CLI flag, and a per-row Remove button in the operator panel to correct the roster without waiting for a fresh check-in.
+- Optional precedence on message traffic: `EMCOMM TRAFFIC <TO> [ROUTINE|PRIORITY|IMMEDIATE] <TEXT>` (defaults to ROUTINE), recorded in the traffic log and echoed in the ACK.
+- After-action export: `--export [DIR]` CLI flag and CSV download links in the operator panel produce `roster.csv`, `traffic_log.csv`, and a `summary.txt` for drill/incident review.
+- `tests/` pytest suite covering mode gating, command parsing, roster/checkout behavior, export output, and panel auth.
+- CI workflow that runs the test suite on push and pull request.
+
+### Fixed
+- Operator panel `/logout` now actually clears the session cookie instead of redirecting without ending the session.
+
 ## [2.1.0] - 2026-09-09
 
 ### Added

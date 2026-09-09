@@ -1,8 +1,4 @@
 <p align="center">
-  <strong>ARRL SET Exercise Control for MeshMonitor</strong>
-</p>
-
-<p align="center">
   <a href="https://www.python.org/">
     <img src="https://img.shields.io/badge/Python-3.8%2B-blue" alt="Python Version">
   </a>
@@ -11,9 +7,9 @@
   </a>
 </p>
 
-# 🚨 ARRL SET Exercise Control
+# 🚨 SET Exercise Control
 
-Unofficial ARRL Simulated Emergency Test (SET) exercise-control Script for [**MeshMonitor**](https://github.com/Yeraze/MeshMonitor), supporting simulated emergency communications over [**Meshtastic**](https://meshtastic.org/), [**MeshCore**](https://meshcore.co.uk/), or any other mesh network MeshMonitor supports.
+An unofficial ARRL Simulated Emergency Test (SET) exercise-control Script for [**MeshMonitor**](https://github.com/Yeraze/MeshMonitor), supporting simulated emergency communications over [**Meshtastic**](https://meshtastic.org/), [**MeshCore**](https://meshcore.io), or any other mesh network MeshMonitor supports.
 
 This repository contains:
 - **mm_arrl_set.py** — the actual MeshMonitor Auto Responder / Timed Event script (runtime)

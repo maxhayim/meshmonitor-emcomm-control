@@ -29,9 +29,12 @@ Copy [`south-dade-set-2026.config.json`](south-dade-set-2026.config.json) to the
   "incident_name": "SET",
   "start": "2026-10-03T09:00",
   "end": "2026-10-03T12:00",
-  "local_instructions": "NCS ON MESH. CHECK IN FIRST. FORMAL TRAFFIC AFTER INJECT 6."
+  "local_instructions": "NCS ON MESH. CHECK IN FIRST. FORMAL TRAFFIC AFTER INJECT 6.",
+  "exercise_style": "set-safe"
 }
 ```
+
+This example uses the **SET-safe** exercise style. Bots on the shared local mesh auto-reply to the word `TEST` and cannot be changed for this exercise, so formal traffic is marked `SET R` / `SET P` and Field 7 begins `EXERCISE`. Clubs without that problem can leave `exercise_style` at `standard`.
 
 Environment variables override the file, for example `MM_EMCOMM_EXERCISE_NAME` or `MM_EMCOMM_ORGANIZATION`. If you run the operator panel, restart it after changing the config.
 
@@ -98,44 +101,44 @@ Timed Events in MeshMonitor run `mm_emcomm_control.py --inject N`:
 Inject 6 begins the formal-message phase:
 
 ```text
-TEST EXERCISE INJECT 6 - FORMAL TRAFFIC PHASE. ORIGINATE AN ICS-213 / NTS-STYLE TEST MESSAGE USING FIELDS 2, 3, 4 AND 7.
-FIELD 7 MUST BEGIN TEST MESSAGE. EX: EMCOMM TRAFFIC P 2:EOC 3:FIELD1 4:STATUS 7:TEST MESSAGE COMMS OPERATIONAL
+EXERCISE INJECT 6 - FORMAL TRAFFIC PHASE. ORIGINATE AN ICS-213 / NTS-STYLE EXERCISE MESSAGE USING FIELDS 2, 3, 4 AND 7.
+FIELD 7 MUST BEGIN EXERCISE. EX: EMCOMM TRAFFIC R 2:EOC 3:FIELD1 4:STATUS 7:EXERCISE COMMS OPERATIONAL
 ```
 
 A field station sends a request, with the incident name in Field 1:
 
 ```text
-EMCOMM TRAFFIC P 1:SET 2:NCS 3:SHELTER1 4:WATER 6:1105 7:TEST MESSAGE REQUEST 20 CASES WATER
-→ TEST ACK EX-007 TO NCS LOGGED. PREC TEST P. NOT A DELIVERY CONFIRMATION.
+EMCOMM TRAFFIC P 1:SET 2:NCS 3:SHELTER1 4:WATER 6:1105 7:EXERCISE REQUEST 20 CASES WATER
+→ EXERCISE ACK EX-007 TO NCS LOGGED. PREC SET P. NOT A DELIVERY CONFIRMATION.
 ```
 
 A station passes the message toward Net Control; the original fields are unchanged:
 
 ```text
 EMCOMM RELAY EX-007 VIA MESHCORE-REPEATER
-→ TEST RELAY EX-007 #1 LOGGED. FIELDS UNCHANGED. NOT A DELIVERY CONFIRMATION.
-→ TEST P | EX-007 | 1:SET | 2:NCS | 3:SHELTER1 | 4:WATER | 6:1105 | 7:TEST MESSAGE REQUEST 20 CASES WATER
+→ EXERCISE RELAY EX-007 #1 LOGGED. FIELDS UNCHANGED. NOT A DELIVERY CONFIRMATION.
+→ SET P | EX-007 | 1:SET | 2:NCS | 3:SHELTER1 | 4:WATER | 6:1105 | 7:EXERCISE REQUEST 20 CASES WATER
 ```
 
 Net Control replies with a new message that references the original:
 
 ```text
-EMCOMM TRAFFIC R RE:EX-007 1:SET 2:SHELTER1 3:NCS 4:WATER 7:TEST MESSAGE REQUEST APPROVED 8:NCS1
-→ TEST ACK EX-008 RE:EX-007 TO SHELTER1 LOGGED. PREC TEST R. NOT A DELIVERY CONFIRMATION.
+EMCOMM TRAFFIC R RE:EX-007 1:SET 2:SHELTER1 3:NCS 4:WATER 7:EXERCISE REQUEST APPROVED 8:NCS1
+→ EXERCISE ACK EX-008 RE:EX-007 TO SHELTER1 LOGGED. PREC SET R. NOT A DELIVERY CONFIRMATION.
 ```
 
 Once the request reaches Net Control, the NCS station confirms delivery:
 
 ```text
 EMCOMM RCVD EX-007
-→ TEST RCVD EX-007 DELIVERY CONFIRMED BY NCS1 AT 11:10. LOGGED.
+→ EXERCISE RCVD EX-007 DELIVERY CONFIRMED BY NCS1 AT 11:10. LOGGED.
 ```
 
 Any station can check status:
 
 ```text
 EMCOMM TRACK EX-007
-→ TEST TRACK EX-007 PREC TEST P TO NCS: LOGGED 11:05 | RELAYED 1X (LAST 11:07) | DELIVERED 11:10 BY NCS1 (5.0 MIN)
+→ EXERCISE TRACK EX-007 PREC SET P TO NCS: LOGGED 11:05 | RELAYED 1X (LAST 11:07) | DELIVERED 11:10 BY NCS1 (5.0 MIN)
 ```
 
 The system ACK confirms **logging only**. A receipt (`RCVD`) is operator-reported delivery.

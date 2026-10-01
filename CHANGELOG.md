@@ -2,6 +2,23 @@
 
 All notable changes to EmComm Control are documented here.
 
+## [2.5.0] - 2026-10-01
+
+### Added
+- Configurable exercise marking style (#4): `exercise_style` in `mm_emcomm_config.json`, or `MM_EMCOMM_EXERCISE_STYLE`.
+  - `standard` (default, unchanged): `TEST R/W/P/EMERGENCY`, Field 7 begins `TEST MESSAGE`.
+  - `set-safe`: `SET R/W/P/EMERGENCY`, Field 7 begins `EXERCISE`, and no EXERCISE-mode output contains the word `TEST`. This covers ACKs, rejections, help, injects, relay output, multipart parts, `TRACK`/`RCVD`, and panel-generated commands. It is for shared mesh networks whose third-party bots react to `TEST`.
+- `exercise_marker` (`TEST` or `SET`) is stored on each formal message and exported as a new last column. Changing styles later never rewrites history.
+- `SET` is accepted as an exercise precedence marker on input in either style.
+- Panel shows the active style in the banner and composer, and generates `SET` commands in SET-safe style.
+
+### Changed
+- The example South Dade SET configuration uses the SET-safe style.
+- Usage hints in rejection messages show `R` (Routine) rather than assuming Priority.
+
+### Fixed
+- Relayed canonical lines such as `SET R | EX-001 | …` match the `^SET` Auto Responder rule; EmComm Control now ignores them silently instead of replying with HELP, which could loop on a shared channel.
+
 ## [2.4.0] - 2026-10-01
 
 ### Added

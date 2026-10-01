@@ -156,7 +156,9 @@ See [`docs/NATIVE_SCRIPT_ACTIONS_PROPOSAL.md`](docs/NATIVE_SCRIPT_ACTIONS_PROPOS
 
 EXERCISE is the default mode.
 
-All exercise responses are explicitly labeled **TEST**, **EXERCISE**, and/or **SIMULATED**. Formal traffic is rendered with TEST before the precedence (`TEST R`, `TEST P`, …), and Field 7 must begin `TEST MESSAGE`. Timed simulated injects are available only in this mode.
+All exercise responses are explicitly labeled **TEST**, **EXERCISE**, and/or **SIMULATED**. By default, formal traffic is rendered with TEST before the precedence (`TEST R`, `TEST P`, …), and Field 7 must begin `TEST MESSAGE`.
+
+On shared networks where other bots auto-reply to the word `TEST`, set `exercise_style` to `set-safe`. Exercise traffic is then marked `SET R` / `SET P` with Field 7 beginning `EXERCISE`, and no exercise output contains `TEST`. Timed simulated injects are available only in this mode.
 
 Use EXERCISE mode for:
 - ARRL® Simulated Emergency Test (SET)
@@ -404,7 +406,8 @@ Defaults are generic (`Emergency Communications Exercise`). To describe your own
   "incident_name": "",
   "start": "",
   "end": "",
-  "local_instructions": ""
+  "local_instructions": "",
+  "exercise_style": "standard"
 }
 ```
 
@@ -417,6 +420,7 @@ Environment variables override the file: `MM_EMCOMM_EXERCISE_NAME` (legacy `SET_
 
 Other options:
 
+- `exercise_style` / `MM_EMCOMM_EXERCISE_STYLE` — `standard` (default: `TEST R`, Field 7 `TEST MESSAGE`) or `set-safe` (`SET R`, Field 7 `EXERCISE`, and no `TEST` anywhere in exercise output). Use `set-safe` on shared mesh networks where third-party bots react to the word `TEST`. See [SET-safe style](docs/formal-traffic.md#exercise-marking-styles-standard-and-set-safe).
 - `MM_EMCOMM_TEST_PREFIX` — `validate` (default) or `auto`. Controls whether exercise traffic missing `TEST MESSAGE` is rejected or auto-prefixed.
 - `MM_EMCOMM_PART_TIMEOUT` — seconds before incomplete multipart traffic expires (default 1800).
 
@@ -571,6 +575,7 @@ This project follows semantic versioning in the same style as `meshmonitor-radio
 - **v2.1.0** — adds the optional browser Operator Control Panel for one-click LIVE / EXERCISE switching and operational status
 - **v2.2.0** — adds roster checkout, traffic precedence, and after-action CSV export (CLI and panel)
 - **v2.3.0** — compressed ICS-213 / NTS-style formal traffic, TEST validation, replies, relays, multipart, 133-character default limit, generic exercise configuration
+- **v2.5.0** — configurable exercise marking: `set-safe` style (`SET R` + `EXERCISE`) for shared networks with TEST-triggered bots
 - **v2.4.0** — message tracking: delivery receipts (`RCVD`), status queries (`TRACK`), optional silent capture of mesh traffic, receive metadata (SNR/hops/channel), per-station activity summary
 
 See [CHANGELOG.md](CHANGELOG.md) for details.

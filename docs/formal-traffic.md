@@ -100,7 +100,7 @@ The v2.2 syntax accepted `ROUTINE | PRIORITY | IMMEDIATE`. **`IMMEDIATE` is not 
 
 ## Exercise (TEST) traffic
 
-Following ARRL practice for test and exercise messages, the word **TEST** precedes the precedence: `TEST R`, `TEST P`, `TEST W`, `TEST EMERGENCY`.
+Following ARRL practice for test and exercise messages, the word **TEST** precedes the precedence in the default `standard` style (see [SET-safe style](#exercise-marking-styles-standard-and-set-safe) for shared networks with TEST-triggered bots): `TEST R`, `TEST P`, `TEST W`, `TEST EMERGENCY`.
 
 In **EXERCISE** mode:
 
@@ -119,6 +119,31 @@ In **LIVE** mode:
 - `TEST` and `TEST MESSAGE` are **never** added automatically.
 - Simulated incident conditions are never generated, and exercise injects are blocked.
 - LIVE mode still requires a local `--mode live --confirm-live` (or the panel's confirmation screen).
+
+### Exercise marking styles: standard and SET-safe
+
+`exercise_style` in `mm_emcomm_config.json`, or `MM_EMCOMM_EXERCISE_STYLE`, selects how exercise traffic is marked:
+
+| | `standard` (default) | `set-safe` |
+|---|---|---|
+| Precedence | `TEST R`, `TEST W`, `TEST P`, `TEST EMERGENCY` | `SET R`, `SET W`, `SET P`, `SET EMERGENCY` |
+| Field 7 must begin | `TEST MESSAGE` | `EXERCISE` |
+| System responses | `TEST ACK …`, `TEST RELAY …`, `TEST EXERCISE INJECT N …` | `EXERCISE ACK …`, `EXERCISE RELAY …`, `EXERCISE INJECT N …` |
+| Relay line | `TEST R \| EX-007 \| 2:MIKE \| … \| 7:TEST MESSAGE …` | `SET R \| EX-007 \| 2:MIKE \| … \| 7:EXERCISE …` |
+
+**Why SET-safe exists.** Some shared mesh networks have third-party bots that trigger on the literal word `TEST`. When those bots cannot be changed, operators may use the SET-safe marker (`SET` + `EXERCISE`) to prevent unintended automated responses while still clearly identifying simulated traffic.
+
+This is an **operational adaptation for shared LoRa networks**. It is not a claim that `SET` replaces formal ARRL/NTS test-message terminology in general. Where bot interference is not a concern, use the standard style.
+
+Behavior in SET-safe style:
+
+- **Precedence stays operator-chosen:** R, W, P, or EMERGENCY (for simulated life-and-death traffic only). Exercise traffic is not assumed to be Priority.
+- **No TEST on air:** in EXERCISE mode, no system output contains the word `TEST`. This covers ACKs, rejections, help, injects, relay output, multipart parts, `TRACK` and `RCVD` responses, and panel-generated commands.
+- **Field 7 check:** must begin with the whole word `EXERCISE`. `MM_EMCOMM_TEST_PREFIX=auto` prefixes `EXERCISE` instead of rejecting.
+- **Either marker accepted on input:** operators may type `SET` or `TEST` before the precedence; output always uses the active style.
+- **Relay lines are ignored by the bot:** a line beginning `SET R |` also matches EmComm Control's own `^SET\b` rule, so EmComm Control ignores relayed canonical lines (`<PREC> | …` after the prefix) silently instead of answering with HELP.
+- **History is preserved:** each record stores `exercise_marker` (`TEST` or `SET`), and changing styles later does not rewrite existing messages.
+- **LIVE mode is unchanged** in either style and never adds `TEST`, `SET` or `EXERCISE`.
 
 ### Real-world traffic during an exercise
 

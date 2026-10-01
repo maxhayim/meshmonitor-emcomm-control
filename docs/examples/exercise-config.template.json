@@ -6,5 +6,6 @@
   "incident_name": "",
   "start": "",
   "end": "",
-  "local_instructions": ""
+  "local_instructions": "",
+  "exercise_style": "standard"
 }

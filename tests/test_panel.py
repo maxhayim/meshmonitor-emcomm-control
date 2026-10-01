@@ -1,3 +1,4 @@
+import json
 import http.client
 import socket
 import threading
@@ -190,6 +191,32 @@ def test_formal_traffic_csv_download(monkeypatch, capsys):
         assert resp.status == 200
         assert data.splitlines()[0].startswith("traffic_id,mode,precedence,test_traffic,field_1_incident")
         assert "EX-001" in data
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_dashboard_shows_tracking_sections(monkeypatch, capsys):
+    send(monkeypatch, capsys, "EMCOMM TRAFFIC P 2:EOC 3:FIELD1 4:STATUS 7:TEST MESSAGE COMMS OPERATIONAL", from_id="!f1")
+    send(monkeypatch, capsys, "EMCOMM RCVD EX-001", from_id="!eoc")
+    server, thread, port = _run_server()
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", "/")
+        body = conn.getresponse().read().decode("utf-8")
+        assert "Station activity" in body
+        assert "Captured mesh messages" in body
+        assert "Delivered" in body and "by !eoc" in body
+        for path in ("/export/stations.csv", "/export/captured_messages.csv"):
+            conn.request("GET", path)
+            resp = conn.getresponse()
+            data = resp.read().decode("utf-8")
+            assert resp.status == 200
+            assert data.splitlines()[0].split(",")[0] in {"station", "time"}
+        conn.request("GET", "/api/status")
+        status = json.loads(conn.getresponse().read())
+        assert status["deliveries"] == 1 and "captured" in status
     finally:
         server.shutdown()
         server.server_close()

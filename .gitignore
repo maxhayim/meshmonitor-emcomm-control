@@ -21,3 +21,6 @@ mm_arrl_set_data/
 Thumbs.db
 .vscode/
 .idea/
+
+# Local EmComm Control exercise configuration
+mm_emcomm_config.json

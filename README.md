@@ -19,6 +19,13 @@ The project provides one runtime with two deliberately separated operating modes
 - **LIVE** — operator-entered real-world check-ins, SITREPs, traffic logging, status, and announcements
 - **EXERCISE** — drills and simulated incidents, including ARRL® Simulated Emergency Test (SET) use and timed exercise injects
 
+Traffic is split into two classes:
+
+- **Tactical** — lightweight `CHECKIN`, `CHECKOUT`, `SITREP`, `STATUS`, `HELP`
+- **Formal** — `TRAFFIC`, using a **compressed ICS-213-compatible field structure with NTS-style traffic handling** (precedence, TEST marking, references/replies, accurate relay, structured logging). See [docs/formal-traffic.md](docs/formal-traffic.md).
+
+> This software provides an ICS-213 / NTS-style workflow for training and communications support. It is not an official FEMA ICS-213, ARRL NTS, Winlink, ARES, RACES, or government message-management system, and it does not replace the official ICS-213 form, Winlink forms, NTS radiogram software, or agency message-management systems.
+
 This repository contains:
 - **mm_emcomm_control.py** — the actual MeshMonitor Auto Responder / Timed Event script (runtime)
 - **mm_emcomm_panel.py** — optional browser-based operator control panel for LIVE / EXERCISE mode and status
@@ -32,7 +39,8 @@ EmComm Control allows operators to:
 
 - Check in with callsign, location, power source, and role
 - Submit and log SITREPs
-- Log addressed message traffic with unique traffic IDs
+- Originate formal ICS-213 / NTS-style traffic (Fields 1–8, R/P/W/EMERGENCY precedence, TEST marking in exercises)
+- Log formal traffic structurally with internal traffic IDs, replies (`RE:`), relays, and multipart reassembly
 - Request current operational statistics
 - Send operator-supplied announcements
 - Run timed **simulated** exercise injects while in EXERCISE mode
@@ -82,6 +90,9 @@ The mode indicator makes it immediately clear whether the system is in **EXERCIS
 - **Refresh Status**
 - **Reset Operation** with confirmation
 - Current station/check-in, SITREP, traffic, and event counts
+- Clear **EXERCISE / TEST** or **LIVE** banner
+- **Formal traffic composer** with structured ICS-213 fields (Incident Name, Precedence, To, From, Subject, Date, Time, Message, Approved By, Reply To) that generates the compact `EMCOMM TRAFFIC` command — multipart when needed — with a live `current / maximum` character counter and a soft warning above 120 characters. The panel only generates commands; send them from your Meshtastic or MeshCore client.
+- Formal traffic log table and `formal_traffic.csv` download
 - Checked-in station table
 - Recent operational-log view
 
@@ -141,7 +152,7 @@ See [`docs/NATIVE_SCRIPT_ACTIONS_PROPOSAL.md`](docs/NATIVE_SCRIPT_ACTIONS_PROPOS
 
 EXERCISE is the default mode.
 
-All exercise responses are explicitly labeled **EXERCISE** and/or **SIMULATED**. Timed simulated injects are available only in this mode.
+All exercise responses are explicitly labeled **TEST**, **EXERCISE**, and/or **SIMULATED**. Formal traffic is rendered with TEST before the precedence (`TEST R`, `TEST P`, …), and Field 7 must begin `TEST MESSAGE`. Timed simulated injects are available only in this mode.
 
 Use EXERCISE mode for:
 - ARRL® Simulated Emergency Test (SET)
@@ -159,7 +170,10 @@ LIVE mode:
 - Logs only information supplied by operators
 - Blocks simulated exercise injects
 - Does not invent or infer incident conditions
+- Never automatically adds `TEST` or `TEST MESSAGE`
 - Cannot be enabled by an inbound mesh message
+
+> If actual emergency traffic occurs during an exercise, operators must stop treating that message as exercise traffic and clearly identify it as real-world traffic according to their local operating procedure.
 
 Enable LIVE mode **locally on the MeshMonitor host**:
 
@@ -187,9 +201,12 @@ Check the current mode:
 <pre>
 ├── mm_emcomm_control.py    # Runtime script used by MeshMonitor
 ├── mm_emcomm_panel.py      # Optional browser operator panel
-├── docs/                   # GitHub Pages documentation
+├── docs/                   # Documentation (GitHub Pages + Markdown)
 │   ├── index.html
-│   └── index.js
+│   ├── index.js
+│   ├── formal-traffic.md   # ICS-213 / NTS-style formal traffic reference
+│   └── examples/           # Example exercise configurations (not defaults)
+├── tests/                  # pytest suite
 ├── ISSUE_TEMPLATE/
 ├── CODE_OF_CONDUCT.md
 ├── CONTRIBUTING.md
@@ -274,37 +291,105 @@ The `SET` prefix is accepted only in EXERCISE mode. LIVE mode requires `EMCOMM`.
 
 ## Mesh commands
 
+### Tactical
+
 ```text
 EMCOMM CHECKIN <CALLSIGN> <LOCATION> <POWER> <ROLE>
 EMCOMM CHECKOUT <CALLSIGN>
 EMCOMM SITREP <LOCATION> <STATUS>
-EMCOMM TRAFFIC <TO> [ROUTINE|PRIORITY|IMMEDIATE] <TEXT>
 EMCOMM STATUS
 EMCOMM HELP
 ```
 
-`EMCOMM TRAFFIC` precedence is optional and defaults to `ROUTINE` when omitted; it is recorded in the traffic log and echoed back in the acknowledgment.
-
-### Example — LIVE or EXERCISE
+### Formal (ICS-213 / NTS-style)
 
 ```text
-EMCOMM CHECKIN W4ABC MIAMI-EOC BATTERY NCS
-EMCOMM SITREP SHELTER-1 COMMERCIAL-POWER-DOWN RF-LINK-GOOD
-EMCOMM TRAFFIC EOC PRIORITY REQUEST-20-CASES-WATER
-EMCOMM STATUS
-EMCOMM CHECKOUT W4ABC
+EMCOMM TRAFFIC <PRECEDENCE> [RE:<ID>] 2:<TO> 3:<FROM> 4:<SUBJECT> 7:<MESSAGE>
+EMCOMM RELAY <TRAFFIC-ID> [VIA <ROUTE>]
 ```
 
-### Legacy exercise compatibility
+- Required: Field 2 To, 3 From, 4 Subject, 7 Message. Optional: 1 Incident Name, 5 Date, 6 Time, 8 Approved By (last), `RE:<ID>`.
+- Precedence: `R` Routine, `P` Priority, `W` Welfare, `EMERGENCY` (always spelled out).
+- Field 7 runs to the end of the message (an optional trailing `8:` excepted).
+- EXERCISE mode: Field 7 **must** begin `TEST MESSAGE`; the system renders precedence as `TEST P` etc.
+- Long messages: send `EMCOMM TRAFFIC 1/2 …`, `EMCOMM TRAFFIC 2/2 …` (the panel generates these).
 
-While in EXERCISE mode, the original syntax remains valid:
+```text
+EMCOMM TRAFFIC P 2:EOC 3:FIELD1 4:STATUS 7:TEST MESSAGE COMMS OPERATIONAL
+→ TEST ACK EX-001 TO EOC LOGGED. PREC TEST P. NOT A DELIVERY CONFIRMATION.
+
+EMCOMM TRAFFIC P 1:SET 2:EOC 3:SHELTER1 4:WATER 5:10/03/26 6:0930 7:TEST MESSAGE REQUEST 20 CASES WATER 8:OPERATOR1
+
+EMCOMM TRAFFIC R RE:EX-001 2:FIELD1 3:EOC 4:STATUS 7:TEST MESSAGE RECEIVED THANKS
+→ TEST ACK EX-002 RE:EX-001 TO FIELD1 LOGGED. PREC TEST R. NOT A DELIVERY CONFIRMATION.
+```
+
+**An ACK from EmComm Control confirms that the system received and logged the traffic. It does not confirm delivery to the intended recipient.** Traffic IDs (`EX-###`, `EC-###`) are internal identifiers, not NTS message numbers.
+
+Full reference: [docs/formal-traffic.md](docs/formal-traffic.md).
+
+### Legacy syntax
+
+Legacy traffic syntax remains supported for compatibility. Structured ICS-213 / NTS-style traffic is preferred.
+
+```text
+EMCOMM TRAFFIC <TO> [ROUTINE|PRIORITY|IMMEDIATE] <TEXT>
+```
+
+`ROUTINE` → `R`, `PRIORITY` → `P`. **`IMMEDIATE` is not an NTS precedence**; it is logged as `P` with `legacy_precedence = IMMEDIATE`, and the ACK says `LEGACY IMMEDIATE LOGGED AS P`.
+
+While in EXERCISE mode, the original `SET` prefix remains valid:
 
 ```text
 SET CHECKIN W4ABC MIAMI-EOC BATTERY NCS
 SET SITREP SHELTER-1 RF-LINK-GOOD
-SET TRAFFIC EOC TEST-MESSAGE
+SET TRAFFIC P 2:EOC 3:SHELTER-1 4:TEST 7:TEST MESSAGE RADIO CHECK
 SET STATUS
 ```
+
+---
+
+## Message length
+
+| Setting | Default | Override |
+|---|---|---|
+| Hard limit per emitted mesh message | **133 characters** | `MM_EMCOMM_MAXLEN` (minimum 60) |
+| Recommended operating target | **120 ASCII characters** | `MM_EMCOMM_RECOMMENDED_LEN` |
+
+133 is a conservative common default intended to work for Meshtastic and MeshCore. Actual limits vary by firmware, channel, and path overhead, so set your own value if your network differs. Longer responses are split automatically with `[1/2]`-style numbering. Formal traffic uses field-preserving multipart.
+
+---
+
+## Exercise configuration
+
+Defaults are generic (`Emergency Communications Exercise`). To describe your own exercise **without modifying source code**, create `/data/scripts/mm_emcomm_config.json` (or point `MM_EMCOMM_CONFIG` at a file):
+
+```json
+{
+  "exercise_name": "Emergency Communications Exercise",
+  "exercise_id": "",
+  "exercise_type": "",
+  "organization": "",
+  "incident_name": "",
+  "start": "",
+  "end": "",
+  "local_instructions": ""
+}
+```
+
+Environment variables override the file: `MM_EMCOMM_EXERCISE_NAME` (legacy `SET_NAME`), `MM_EMCOMM_EXERCISE_ID`, `MM_EMCOMM_EXERCISE_TYPE`, `MM_EMCOMM_ORGANIZATION`, `MM_EMCOMM_INCIDENT_NAME`, `MM_EMCOMM_EXERCISE_START`, `MM_EMCOMM_EXERCISE_END`, `MM_EMCOMM_LOCAL_INSTRUCTIONS`.
+
+- The exercise name appears in injects 1 and 8.
+- `local_instructions` is appended to HELP in EXERCISE mode.
+- The incident name pre-fills Field 1 in the panel composer.
+- All values appear in the after-action summary.
+
+Other options:
+
+- `MM_EMCOMM_TEST_PREFIX` — `validate` (default) or `auto`. Controls whether exercise traffic missing `TEST MESSAGE` is rejected or auto-prefixed.
+- `MM_EMCOMM_PART_TIMEOUT` — seconds before incomplete multipart traffic expires (default 1800).
+
+**Example exercise scenario:** [docs/examples/south-dade-set-2026.md](docs/examples/south-dade-set-2026.md) — an example SET configuration, not a default.
 
 ---
 
@@ -339,7 +424,7 @@ The script labels the announcement according to the active mode. In EXERCISE mod
 /data/scripts/mm_emcomm_control.py --export /path/to/output-dir
 ```
 
-Writes `roster.csv`, `traffic_log.csv`, and `summary.txt`. With no directory given, the export is written under the script's data directory, timestamped. The operator panel offers the same CSV files as one-click downloads.
+Writes `roster.csv`, `traffic_log.csv`, `formal_traffic.csv` (one row per formal message with ICS-213 fields and relay counts), and `summary.txt`. With no directory given, the export is written under the script's data directory, timestamped. The operator panel offers the same CSV files as one-click downloads.
 
 Reset preserves the current LIVE / EXERCISE mode.
 
@@ -367,13 +452,13 @@ Example sequence:
 09:15  Inject 2 — simulated commercial power failure
 09:30  Inject 3 — simulated cellular / Internet degradation
 10:00  Inject 4 — simulated served-agency SITREP request
-10:30  Inject 5 — simulated message-traffic phase
-11:00  Inject 6 — simulated formal-message / ICS-213 phase
+10:30  Inject 5 — simulated tactical traffic phase
+11:00  Inject 6 — formal traffic phase (ICS-213 / NTS-style TEST messages)
 11:30  Inject 7 — simulated partial restoration
 12:00  Inject 8 — end of exercise
 ```
 
-If an inject is invoked while LIVE, the script refuses to transmit it.
+All injects begin `TEST EXERCISE INJECT N` and are kept within the configured message limit, using multiple messages where needed. If an inject is invoked while LIVE, the script refuses to transmit it.
 
 ---
 
@@ -392,7 +477,9 @@ state.json
 traffic.jsonl
 ```
 
-The state file stores the current mode, participants/stations, counts, and exercise state. The JSONL log records check-ins, SITREPs, message traffic, announcements, mode changes, and exercise injects.
+The state file stores the current mode, participants/stations, counts, pending multipart traffic, and exercise state. The JSONL log records check-ins, SITREPs, structured formal traffic, relays, announcements, mode changes, and exercise injects.
+
+Pre-2.3 traffic records are upgraded to the structured field model in memory when read or exported. The log file on disk is never rewritten.
 
 ### Migration from SET Exercise Control
 
@@ -445,6 +532,7 @@ This project follows semantic versioning in the same style as `meshmonitor-radio
 - **v2.0.1** — changes the MeshMonitor icon to 🚨 and documents city, county/regional, and state EOC deployments
 - **v2.1.0** — adds the optional browser Operator Control Panel for one-click LIVE / EXERCISE switching and operational status
 - **v2.2.0** — adds roster checkout, traffic precedence, and after-action CSV export (CLI and panel)
+- **v2.3.0** — compressed ICS-213 / NTS-style formal traffic, TEST validation, replies, relays, multipart, 133-character default limit, generic exercise configuration
 
 See [CHANGELOG.md](CHANGELOG.md) for details.
 
@@ -454,7 +542,7 @@ See [CHANGELOG.md](CHANGELOG.md) for details.
 
 ARRL® and related names and marks are trademarks of the American Radio Relay League, Incorporated.
 
-EmComm Control is an independent, community-developed MeshMonitor tool. It may be used as part of an ARRL Simulated Emergency Test (SET), but it is **not affiliated with, sponsored by, endorsed by, or officially maintained by ARRL**.
+EmComm Control is an independent, community-developed MeshMonitor tool. It may be used as part of an ARRL Simulated Emergency Test (SET), but it is **not affiliated with, sponsored by, endorsed by, or officially maintained by ARRL**. Likewise, it is not affiliated with or endorsed by FEMA, and it is not certified as an ICS-213, NTS, Winlink, ARES, or RACES implementation.
 
 No ARRL logos or graphical trademarks are included with this project.
 

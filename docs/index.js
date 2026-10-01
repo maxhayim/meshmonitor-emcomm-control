@@ -55,11 +55,12 @@
     <h1>🚨 EmComm Control</h1>
     <p>Emergency communications control for MeshMonitor with deliberately separated LIVE and EXERCISE modes over Meshtastic and MeshCore, suitable for city, county/regional, and state Emergency Operations Center (EOC) workflows.</p>
     <div class="badges">
-      <span class="pill">Python 3.8+</span>
+      <span class="pill">Python 3.9+</span>
       <span class="pill">MIT License</span>
       <span class="pill">Meshtastic</span>
       <span class="pill">MeshCore</span>
       <span class="pill">LIVE + EXERCISE</span>
+      <span class="pill">ICS-213 / NTS-style traffic</span>
     </div>
     <p><a href="https://github.com/${REPO}">GitHub repository</a> · <a href="https://github.com/${REPO}/blob/main/${SCRIPT}">View runtime script</a></p>
   ` }));
@@ -76,13 +77,14 @@
   ` }));
 
   wrap.appendChild(el("section", { class: "card", html: `
-    <h2>Operator Control Panel — v2.1.0</h2>
+    <h2>Operator Control Panel</h2>
     <p>Operators can use a local browser UI instead of terminal commands to switch between LIVE and EXERCISE modes.</p>
     <ul>
       <li>Confirmed <strong>Activate LIVE</strong> button</li>
       <li><strong>Switch to EXERCISE</strong> and <strong>Refresh Status</strong></li>
       <li>Check-in, SITREP, traffic and event counters</li>
-      <li>Station and recent-log tables</li>
+      <li>Station, formal traffic, and recent-log tables</li>
+      <li>Structured ICS-213 formal traffic composer with character counter</li>
       <li>LAN binding requires an access token</li>
     </ul>
     <pre>python3 /data/scripts/mm_emcomm_panel.py --open</pre>
@@ -104,7 +106,7 @@
     <h2>EXERCISE mode</h2>
     <p>For drills, SET activities and simulated incidents.</p>
     <ul>
-      <li>Explicit EXERCISE / SIMULATED labeling</li>
+      <li>Explicit TEST / EXERCISE / SIMULATED labeling</li>
       <li>Eight timed exercise injects</li>
       <li>Legacy SET command compatibility</li>
       <li>After-action logging</li>
@@ -122,7 +124,12 @@
 
   wrap.appendChild(el("section", { class: "card", html: `
     <h2>Mesh commands</h2>
-    <pre>EMCOMM CHECKIN &lt;CALLSIGN&gt; &lt;LOCATION&gt; &lt;POWER&gt; &lt;ROLE&gt;\nEMCOMM SITREP &lt;LOCATION&gt; &lt;STATUS&gt;\nEMCOMM TRAFFIC &lt;TO&gt; &lt;TEXT&gt;\nEMCOMM STATUS\nEMCOMM HELP</pre>
+    <h3>Tactical</h3>
+    <pre>EMCOMM CHECKIN &lt;CALLSIGN&gt; &lt;LOCATION&gt; &lt;POWER&gt; &lt;ROLE&gt;\nEMCOMM CHECKOUT &lt;CALLSIGN&gt;\nEMCOMM SITREP &lt;LOCATION&gt; &lt;STATUS&gt;\nEMCOMM STATUS\nEMCOMM HELP</pre>
+    <h3>Formal (ICS-213 / NTS-style)</h3>
+    <pre>EMCOMM TRAFFIC P 2:EOC 3:FIELD1 4:STATUS 7:TEST MESSAGE COMMS OPERATIONAL\nEMCOMM TRAFFIC R RE:EX-001 2:FIELD1 3:EOC 4:STATUS 7:TEST MESSAGE RECEIVED\nEMCOMM RELAY EX-001</pre>
+    <p class="muted">Fields: 1 Incident · 2 To · 3 From · 4 Subject · 5 Date · 6 Time · 7 Message · 8 Approved By. Precedence R / P / W / EMERGENCY. In EXERCISE mode Field 7 must begin TEST MESSAGE. A system ACK confirms logging, not delivery. Default message limit 133 characters (120 recommended).</p>
+    <p class="muted">This is an ICS-213 / NTS-style workflow for training and communications support. It is not an official FEMA ICS-213, ARRL NTS, Winlink, ARES, RACES, or government message-management system. See <a href="https://github.com/${REPO}/blob/main/docs/formal-traffic.md">docs/formal-traffic.md</a>.</p>
   ` }));
 
   wrap.appendChild(el("section", { class: "card", html: `

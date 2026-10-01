@@ -3,7 +3,7 @@
 #   name: EmComm Control
 #   emoji: 🚨
 #   language: Python
-__version__ = "2.4.0"
+__version__ = "2.5.0"
 
 """
 EmComm Control for MeshMonitor.
@@ -96,10 +96,29 @@ MAX_PARTS = 9
 PART_TIMEOUT_SECONDS = _int_env("MM_EMCOMM_PART_TIMEOUT", 1800)
 
 # Exercise Field 7 handling: "validate" (default) rejects formal exercise traffic
-# whose Field 7 does not begin with TEST MESSAGE; "auto" prepends it instead.
-# Either way this only ever applies in EXERCISE mode.
+# whose Field 7 does not begin with the exercise message marker; "auto" prepends
+# it instead. Either way this only ever applies in EXERCISE mode.
 TEST_PREFIX_MODE = os.getenv("MM_EMCOMM_TEST_PREFIX", "validate").strip().lower()
 TEST_MESSAGE_PREFIX = "TEST MESSAGE"
+
+# Exercise marking styles. "standard" follows ARRL/NTS practice (TEST before the
+# precedence, Field 7 begins TEST MESSAGE). "set-safe" is an operational
+# adaptation for shared mesh networks whose third-party bots react to the literal
+# word TEST: precedence is marked SET, Field 7 begins EXERCISE, and no emitted
+# exercise text contains the word TEST. LIVE mode never uses either marker.
+EXERCISE_STYLES = {
+    "standard": {
+        "name": "standard", "precedence_marker": "TEST", "message_marker": "TEST MESSAGE",
+        "label": "TEST", "inject": "TEST EXERCISE INJECT", "end": "END TEST.", "example_prec": "P",
+    },
+    "set-safe": {
+        "name": "set-safe", "precedence_marker": "SET", "message_marker": "EXERCISE",
+        "label": "EXERCISE", "inject": "EXERCISE INJECT", "end": "END EXERCISE.", "example_prec": "R",
+    },
+}
+EXERCISE_STYLE_ALIASES = {"set": "set-safe", "set_safe": "set-safe", "setsafe": "set-safe", "test": "standard"}
+# Precedence markers accepted on input in any style; output uses the active style.
+EXERCISE_MARKERS = {"TEST", "SET"}
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +134,7 @@ DEFAULT_CONFIG = {
     "start": "",
     "end": "",
     "local_instructions": "",
+    "exercise_style": "standard",
 }
 
 # Environment variables override the optional JSON config file.
@@ -127,6 +147,7 @@ CONFIG_ENV = {
     "start": ("MM_EMCOMM_EXERCISE_START",),
     "end": ("MM_EMCOMM_EXERCISE_END",),
     "local_instructions": ("MM_EMCOMM_LOCAL_INSTRUCTIONS",),
+    "exercise_style": ("MM_EMCOMM_EXERCISE_STYLE",),
 }
 
 
@@ -163,6 +184,12 @@ CONFIG = load_config()
 EXERCISE_NAME = CONFIG["exercise_name"]
 
 
+def exercise_style(cfg=None):
+    """Active exercise marking profile; unknown values fall back to standard."""
+    raw = str((cfg or CONFIG).get("exercise_style") or "standard").strip().lower()
+    return EXERCISE_STYLES.get(EXERCISE_STYLE_ALIASES.get(raw, raw), EXERCISE_STYLES["standard"])
+
+
 # ---------------------------------------------------------------------------
 # Exercise injects (EXERCISE mode only). Each entry is a list of mesh messages;
 # emit() further splits any message that exceeds the configured limit.
@@ -171,41 +198,53 @@ EXERCISE_NAME = CONFIG["exercise_name"]
 FORMAL_EXAMPLE = "EMCOMM TRAFFIC P 2:EOC 3:FIELD1 4:STATUS 7:TEST MESSAGE COMMS OPERATIONAL"
 
 
+def formal_example(style=None):
+    style = style or exercise_style()
+    return (
+        f"EMCOMM TRAFFIC {style['example_prec']} 2:EOC 3:FIELD1 4:STATUS "
+        f"7:{style['message_marker']} COMMS OPERATIONAL"
+    )
+
+
 def exercise_injects(cfg=None):
-    name = (cfg or CONFIG)["exercise_name"].upper()
+    cfg = cfg or CONFIG
+    name = cfg["exercise_name"].upper()
+    style = exercise_style(cfg)
+    inject, marker = style["inject"], style["message_marker"]
     return {
         1: [
-            f"TEST EXERCISE INJECT 1 - {name} HAS BEGUN. ALL TRAFFIC IS SIMULATED.",
+            f"{inject} 1 - {name} HAS BEGUN. ALL TRAFFIC IS SIMULATED.",
             "CHECK IN: EMCOMM CHECKIN <CALLSIGN> <LOCATION> <POWER> <ROLE>",
         ],
         2: [
-            "TEST EXERCISE INJECT 2 - SIMULATED COMMERCIAL POWER FAILURE IN PARTS OF THE AREA. "
+            f"{inject} 2 - SIMULATED COMMERCIAL POWER FAILURE IN PARTS OF THE AREA. "
             "REPORT STATUS: EMCOMM SITREP <LOCATION> <STATUS>",
         ],
         3: [
-            "TEST EXERCISE INJECT 3 - SIMULATED CELL AND INTERNET DEGRADATION. "
+            f"{inject} 3 - SIMULATED CELL AND INTERNET DEGRADATION. "
             "USE RF MESH. REPORT CONNECTIVITY AND RELAY CAPABILITY.",
         ],
         4: [
-            "TEST EXERCISE INJECT 4 - SIMULATED SERVED-AGENCY REQUEST FOR COMMS STATUS. "
+            f"{inject} 4 - SIMULATED SERVED-AGENCY REQUEST FOR COMMS STATUS. "
             "ALL FIELD LOCATIONS SEND EMCOMM SITREP.",
         ],
         5: [
-            "TEST EXERCISE INJECT 5 - SIMULATED TACTICAL TRAFFIC PHASE. "
+            f"{inject} 5 - SIMULATED TACTICAL TRAFFIC PHASE. "
             "SEND SHORT UPDATES WITH EMCOMM SITREP. USE EXERCISE DATA ONLY.",
         ],
         6: [
-            "TEST EXERCISE INJECT 6 - FORMAL TRAFFIC PHASE. "
-            "ORIGINATE AN ICS-213 / NTS-STYLE TEST MESSAGE USING FIELDS 2, 3, 4 AND 7.",
-            f"FIELD 7 MUST BEGIN TEST MESSAGE. EX: {FORMAL_EXAMPLE}",
+            f"{inject} 6 - FORMAL TRAFFIC PHASE. "
+            f"ORIGINATE AN ICS-213 / NTS-STYLE {'TEST' if marker.startswith('TEST') else 'EXERCISE'} MESSAGE "
+            "USING FIELDS 2, 3, 4 AND 7.",
+            f"FIELD 7 MUST BEGIN {marker}. EX: {formal_example(style)}",
         ],
         7: [
-            "TEST EXERCISE INJECT 7 - SIMULATED PARTIAL RESTORATION OF COMMERCIAL COMMS. "
+            f"{inject} 7 - SIMULATED PARTIAL RESTORATION OF COMMERCIAL COMMS. "
             "REPORT RF PATH, POWER SOURCE, AND REMAINING GAPS.",
         ],
         8: [
-            f"TEST EXERCISE INJECT 8 - END OF SIMULATED TRAFFIC FOR {name}.",
-            "SEND FINAL SITREP IF REQUESTED. COUNTS RETAINED FOR AFTER-ACTION REVIEW. END TEST.",
+            f"{inject} 8 - END OF SIMULATED TRAFFIC FOR {name}.",
+            f"SEND FINAL SITREP IF REQUESTED. COUNTS RETAINED FOR AFTER-ACTION REVIEW. {style['end']}",
         ],
     }
 
@@ -476,9 +515,9 @@ PRECEDENCE_NAMES = {"R": "ROUTINE", "P": "PRIORITY", "W": "WELFARE", "EMERGENCY"
 LEGACY_PRECEDENCE_MAP = {"ROUTINE": "R", "PRIORITY": "P", "IMMEDIATE": "P"}
 
 
-def precedence_display(precedence, test_traffic):
-    """Render precedence as it appears in a preamble, e.g. 'TEST P' or 'EMERGENCY'."""
-    return f"TEST {precedence}" if test_traffic else precedence
+def precedence_display(precedence, test_traffic, marker="TEST"):
+    """Render precedence as it appears in a preamble, e.g. 'TEST P', 'SET R' or 'EMERGENCY'."""
+    return f"{marker or 'TEST'} {precedence}" if test_traffic else precedence
 
 
 # ---------------------------------------------------------------------------
@@ -514,6 +553,7 @@ class FormalTraffic:
     reply_to: str = ""
     syntax: str = "ics213"
     legacy_precedence: str = ""
+    marker: str = ""  # exercise precedence marker: TEST or SET (empty for untagged traffic)
 
 
 def parse_field_segments(text):
@@ -566,18 +606,18 @@ def merge_segments(segment_lists):
 
 
 def parse_traffic_header(tokens):
-    """Parse '[TEST] <PRECEDENCE>' from the start of a token list. Returns (precedence, test, rest)."""
-    test = False
-    if tokens and tokens[0].upper() == "TEST":
-        test = True
+    """Parse '[TEST|SET] <PRECEDENCE>' from a token list. Returns (precedence, marker, rest)."""
+    marker = ""
+    if tokens and tokens[0].upper() in EXERCISE_MARKERS:
+        marker = tokens[0].upper()
         tokens = tokens[1:]
     if not tokens or tokens[0].upper() not in PRECEDENCE_TOKENS:
         raise TrafficError("PRECEDENCE MUST BE R, P, W OR EMERGENCY")
-    return PRECEDENCE_TOKENS[tokens[0].upper()], test, tokens[1:]
+    return PRECEDENCE_TOKENS[tokens[0].upper()], marker, tokens[1:]
 
 
-def build_formal(precedence, test, merged):
-    traffic = FormalTraffic(precedence=precedence, test_traffic=test)
+def build_formal(precedence, marker, merged):
+    traffic = FormalTraffic(precedence=precedence, test_traffic=bool(marker), marker=marker)
     reply = merged.pop("RE", "")
     if reply:
         reply = reply.upper()
@@ -594,15 +634,15 @@ def is_structured_traffic(args):
     if not tokens:
         return False
     first = tokens[0].upper()
-    return bool(PART_RE.match(first)) or first == "TEST" or first in PRECEDENCE_TOKENS
+    return bool(PART_RE.match(first)) or first in EXERCISE_MARKERS or first in PRECEDENCE_TOKENS
 
 
 def parse_structured(args):
-    """Parse '[TEST] <PREC> [RE:<ID>] 2:.. 3:.. 4:.. 7:..' (single-part)."""
-    precedence, test, rest = parse_traffic_header(args.split())
+    """Parse '[TEST|SET] <PREC> [RE:<ID>] 2:.. 3:.. 4:.. 7:..' (single-part)."""
+    precedence, marker, rest = parse_traffic_header(args.split())
     if not rest:
         raise TrafficError("MISSING FIELDS 2, 3, 4 AND 7")
-    return build_formal(precedence, test, merge_segments([parse_field_segments(" ".join(rest))]))
+    return build_formal(precedence, marker, merge_segments([parse_field_segments(" ".join(rest))]))
 
 
 def parse_legacy(args):
@@ -625,15 +665,23 @@ def parse_legacy(args):
     )
 
 
-def validate_formal(traffic, exercise, auto_prefix=None):
-    """Validate and apply EXERCISE TEST marking. Returns a list of error strings.
+def starts_with_marker(text, marker):
+    upper = (text or "").upper()
+    return upper == marker or upper.startswith(marker + " ")
 
-    In EXERCISE mode the traffic is always flagged as TEST traffic, and Field 7
-    must begin TEST MESSAGE (or is auto-prefixed when configured). In LIVE mode
-    nothing is ever added; operator-supplied text is kept exactly as sent.
+
+def validate_formal(traffic, exercise, auto_prefix=None, style=None):
+    """Validate and apply EXERCISE marking. Returns a list of error strings.
+
+    In EXERCISE mode the traffic is always flagged as exercise traffic, rendered
+    with the active style's precedence marker (TEST or SET), and Field 7 must
+    begin the style's message marker (TEST MESSAGE or EXERCISE), or is
+    auto-prefixed when configured. In LIVE mode nothing is ever added;
+    operator-supplied text is kept exactly as sent.
     """
     if auto_prefix is None:
         auto_prefix = TEST_PREFIX_MODE == "auto"
+    style = style or exercise_style()
     errors = []
     if traffic.syntax != "legacy":
         missing = [k for k in REQUIRED_FIELDS if not traffic.fields.get(k)]
@@ -642,12 +690,14 @@ def validate_formal(traffic, exercise, auto_prefix=None):
             errors.append(f"MISSING {names}")
     if exercise:
         traffic.test_traffic = True
+        traffic.marker = style["precedence_marker"]
+        marker = style["message_marker"]
         message = traffic.fields.get("7", "")
-        if traffic.syntax != "legacy" and message and not message.upper().startswith(TEST_MESSAGE_PREFIX):
+        if traffic.syntax != "legacy" and message and not starts_with_marker(message, marker):
             if auto_prefix:
-                traffic.fields["7"] = f"{TEST_MESSAGE_PREFIX} {message}"
+                traffic.fields["7"] = f"{marker} {message}"
             else:
-                errors.append("FIELD 7 MUST BEGIN TEST MESSAGE")
+                errors.append(f"FIELD 7 MUST BEGIN {marker}")
     return errors
 
 
@@ -733,7 +783,7 @@ def serialize_traffic(traffic, traffic_id, limit=None):
     Field content is never altered; multipart output uses 'EX-003 1/2' headers.
     """
     limit = limit or MAX_LEN
-    prec = precedence_display(traffic.precedence, traffic.test_traffic)
+    prec = precedence_display(traffic.precedence, traffic.test_traffic, traffic.marker)
 
     def header(k, n):
         if n == 0:
@@ -748,7 +798,7 @@ def serialize_traffic(traffic, traffic_id, limit=None):
 def compose_traffic_command(traffic, prefix="EMCOMM", limit=None):
     """Build the compact mesh command(s) an operator sends, multipart when needed."""
     limit = limit or MAX_LEN
-    prec = precedence_display(traffic.precedence, traffic.test_traffic)
+    prec = precedence_display(traffic.precedence, traffic.test_traffic, traffic.marker)
 
     def header(k, n):
         if n == 0:
@@ -761,7 +811,7 @@ def compose_traffic_command(traffic, prefix="EMCOMM", limit=None):
 
 
 SERIAL_FIRST_RE = re.compile(
-    r"^(?P<prec>(?:TEST\s+)?[A-Z]+)\s*\|\s*(?P<id>[A-Z0-9][A-Z0-9-]*)(?:\s+(?P<k>[1-9])/(?P<n>[1-9]))?\s*\|\s*(?P<rest>.*)$",
+    r"^(?P<prec>(?:(?:TEST|SET)\s+)?[A-Z]+)\s*\|\s*(?P<id>[A-Z0-9][A-Z0-9-]*)(?:\s+(?P<k>[1-9])/(?P<n>[1-9]))?\s*\|\s*(?P<rest>.*)$",
     re.I,
 )
 SERIAL_CONT_RE = re.compile(r"^(?P<id>[A-Z0-9][A-Z0-9-]*)\s+(?P<k>[1-9])/(?P<n>[1-9])\s*\|\s*(?P<rest>.*)$", re.I)
@@ -779,14 +829,14 @@ def reassemble_serialized(parts):
     total = int(first.group("n") or 1)
     if len(parts) != total:
         raise TrafficError(f"EXPECTED {total} PARTS, GOT {len(parts)}")
-    precedence, test, _ = parse_traffic_header(first.group("prec").split())
+    precedence, marker, _ = parse_traffic_header(first.group("prec").split())
     segment_lists = [parse_field_segments(first.group("rest"))]
     for index, part in enumerate(parts[1:], 2):
         m = SERIAL_CONT_RE.match(part)
         if not m or m.group("id").upper() != traffic_id or int(m.group("k")) != index or int(m.group("n")) != total:
             raise TrafficError(f"PART {index}/{total} DOES NOT MATCH {traffic_id}")
         segment_lists.append(parse_field_segments(m.group("rest")))
-    return traffic_id, build_formal(precedence, test, merge_segments(segment_lists))
+    return traffic_id, build_formal(precedence, marker, merge_segments(segment_lists))
 
 
 # ---------------------------------------------------------------------------
@@ -803,6 +853,7 @@ def traffic_record(traffic, traffic_id, mode, from_node, raw_input, parts=1, rep
         "precedence": traffic.precedence,
         "legacy_precedence": traffic.legacy_precedence,
         "test_traffic": traffic.test_traffic,
+        "exercise_marker": traffic.marker if traffic.test_traffic else "",
         "reply_to": traffic.reply_to,
         "from_node": str(from_node),
         "received_time": received,
@@ -863,6 +914,7 @@ def traffic_from_record(record):
         reply_to=record.get("reply_to", ""),
         syntax=record.get("syntax", "ics213"),
         legacy_precedence=record.get("legacy_precedence", ""),
+        marker=record.get("exercise_marker") or ("TEST" if record.get("test_traffic") else ""),
     )
 
 
@@ -879,9 +931,10 @@ def help_text(state):
     ]
     follow_up = " | RELAY/RCVD/TRACK <ID>"
     if is_exercise(state):
-        messages.append(f"FORMAL: {FORMAL_EXAMPLE}{follow_up}")
+        style = exercise_style()
+        messages.append(f"FORMAL: {formal_example(style)}{follow_up}")
         messages.append(
-            "EXERCISE: FIELD 7 MUST BEGIN TEST MESSAGE. PREC R/P/W/EMERGENCY. "
+            f"EXERCISE: FIELD 7 MUST BEGIN {style['message_marker']}. PREC R/P/W/EMERGENCY. "
             "OPTIONAL 1: 5: 6: 8: RE:<ID>. SET PREFIX OK."
         )
         if CONFIG.get("local_instructions"):
@@ -949,20 +1002,21 @@ def handle_sitrep(body, from_node, state):
 
 def traffic_usage(state):
     if is_exercise(state):
-        return "USE: EMCOMM TRAFFIC P 2:TO 3:FROM 4:SUBJ 7:TEST MESSAGE TEXT"
-    return "USE: EMCOMM TRAFFIC P 2:TO 3:FROM 4:SUBJ 7:TEXT"
+        return f"USE: EMCOMM TRAFFIC R 2:TO 3:FROM 4:SUBJ 7:{exercise_style()['message_marker']} TEXT"
+    return "USE: EMCOMM TRAFFIC R 2:TO 3:FROM 4:SUBJ 7:TEXT"
 
 
 def traffic_label(state):
-    return "TEST" if is_exercise(state) else "LIVE"
+    """Leading label of formal-traffic system responses: TEST / EXERCISE (set-safe) / LIVE."""
+    return exercise_style()["label"] if is_exercise(state) else "LIVE"
 
 
 def traffic_ack(traffic, traffic_id, state, reply_found=None):
     """System receipt. Confirms logging only, never delivery to the addressee."""
-    label = "TEST ACK" if is_exercise(state) else "LIVE ACK"
+    label = f"{traffic_label(state)} ACK"
     ref = f" RE:{traffic.reply_to}" if traffic.reply_to else ""
     to = traffic.fields.get("2", "")
-    prec = precedence_display(traffic.precedence, traffic.test_traffic)
+    prec = precedence_display(traffic.precedence, traffic.test_traffic, traffic.marker)
     text = f"{label} {traffic_id}{ref} TO {to} LOGGED. PREC {prec}."
     if traffic.reply_to and reply_found is False:
         text += " REF NOT IN LOG."
@@ -1030,11 +1084,11 @@ def handle_traffic_part(part_token, args, from_node, state, raw_input):
     pending.pop(key, None)
     save_state(state)
     try:
-        precedence, test, rest = parse_traffic_header(entry["parts"]["1"].split())
+        precedence, marker, rest = parse_traffic_header(entry["parts"]["1"].split())
         segment_lists = [parse_field_segments(" ".join(rest))]
         for i in range(2, n + 1):
             segment_lists.append(parse_field_segments(entry["parts"][str(i)]))
-        traffic = build_formal(precedence, test, merge_segments(segment_lists))
+        traffic = build_formal(precedence, marker, merge_segments(segment_lists))
     except TrafficError as exc:
         return f"{label} TRAFFIC REJECTED: {exc}. {traffic_usage(state)}"
     return accept_traffic(traffic, from_node, state, " || ".join(entry["raw"]), parts=n)
@@ -1186,7 +1240,10 @@ def handle_track(body, state):
     original, relays, receipts = traffic_history(traffic_id)
     if not original:
         return f"{label} TRACK: {traffic_id} NOT IN LOG."
-    prec = precedence_display(original.get("precedence", ""), original.get("test_traffic"))
+    prec = precedence_display(
+        original.get("precedence", ""), original.get("test_traffic"),
+        original.get("exercise_marker") or "TEST",
+    )
     parts = [f"{label} TRACK {traffic_id} PREC {prec} TO {original.get('field_2_to', '')}: LOGGED {_hhmm(original.get('time', ''))}"]
     if relays:
         parts.append(f"RELAYED {len(relays)}X (LAST {_hhmm(relays[-1].get('relay_time', ''))})")
@@ -1204,7 +1261,7 @@ def handle_track(body, state):
 # System responses that may echo back on a MeshCore channel; captured but flagged.
 SYSTEM_ECHO_RE = re.compile(
     r"^(TEST|LIVE|EXERCISE) (ACK|RCVD|RELAY|TRACK|STATUS|TRAFFIC|PART|CHECKOUT|ANNOUNCEMENT|TACTICAL)\b"
-    r"|^TEST EXERCISE INJECT \d|^(TEST P|TEST R|TEST W|TEST EMERGENCY|P|R|W|EMERGENCY) \| ",
+    r"|^(TEST EXERCISE|EXERCISE) INJECT \d|^((TEST|SET) )?(P|R|W|EMERGENCY) \| ",
 )
 
 
@@ -1257,6 +1314,13 @@ def handle_status(state):
     )
 
 
+SERIALIZED_LINE_RE = re.compile(r"^(R|P|W|EMERGENCY)\s*\|", re.I)
+
+
+def is_serialized_line(body):
+    return bool(SERIALIZED_LINE_RE.match(body or ""))
+
+
 def handle_message():
     message = normalize(os.getenv("MESSAGE", ""))
     from_node = sender_id()
@@ -1265,6 +1329,11 @@ def handle_message():
         emit(f"{mode_label(state['mode'])} EmComm Control ready. No MESSAGE received.")
         return
     prefix, body = strip_prefix(message)
+    if prefix and is_serialized_line(body):
+        # A relayed canonical message such as 'SET P | EX-001 | 2:EOC ...' begins
+        # with the SET marker and so matches the ^SET rule. Stay silent rather
+        # than answer it with HELP, which could loop on a shared channel.
+        return
     if prefix == "SET" and state["mode"] == "live":
         emit("LIVE mode: SET exercise prefix is disabled. Use EMCOMM commands.")
         return
@@ -1325,17 +1394,18 @@ def handle_inject(number):
     if not is_exercise(state):
         emit("LIVE mode: simulated exercise injects are blocked.")
         return
-    if number not in EXERCISE_INJECTS:
-        emit(f"EXERCISE ERROR: unknown inject {number}. Valid injects: 1-{max(EXERCISE_INJECTS)}.")
+    injects = exercise_injects()
+    if number not in injects:
+        emit(f"EXERCISE ERROR: unknown inject {number}. Valid injects: 1-{max(injects)}.")
         return
     if number == 1 and not state["started"]:
         state["started"] = now_iso()
-    if number == max(EXERCISE_INJECTS):
+    if number == max(injects):
         state["ended"] = now_iso()
     state["last_inject"] = number
     state["events"] += 1
     save_state(state)
-    messages = EXERCISE_INJECTS[number]
+    messages = injects[number]
     log_event("inject", "", " ".join(messages), {"inject": number})
     emit(messages)
 
@@ -1384,7 +1454,7 @@ FORMAL_TRAFFIC_FIELDS = [
     "reply_to", "from_node", "from_station", "received_time", "raw_input",
     "syntax", "legacy_precedence", "parts",
     "status", "relay_count", "delivered_by", "delivered_time", "delivery_minutes", "receipt_count",
-    "snr", "rssi", "hops", "channel", "network",
+    "snr", "rssi", "hops", "channel", "network", "exercise_marker",
 ]
 
 RX_FIELDS = ["from_name", "channel", "is_direct", "snr", "rssi", "hops", "via_mqtt", "packet_id", "network"]
@@ -1399,7 +1469,7 @@ TRAFFIC_LOG_FIELDS = [
     "relayed_by", "relay_time", "relay_count", "relay_route",
     "delivered_by", "delivered_time", "delivery_minutes", "delivery_note", "self_confirmed",
     "possible_echo",
-] + RX_FIELDS
+] + RX_FIELDS + ["exercise_marker"]
 
 CAPTURE_FIELDS = ["time", "mode", "from_node", "from_name", "message", "possible_echo"] + RX_FIELDS[1:]
 

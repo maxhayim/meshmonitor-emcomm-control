@@ -440,7 +440,8 @@ def test_default_config_is_generic(tmp_path, monkeypatch):
             monkeypatch.delenv(name, raising=False)
     cfg = control.load_config(tmp_path / "missing.json")
     assert cfg["exercise_name"] == "Emergency Communications Exercise"
-    assert all(v == "" for k, v in cfg.items() if k != "exercise_name")
+    assert cfg["exercise_style"] == "standard"
+    assert all(v == "" for k, v in cfg.items() if k not in {"exercise_name", "exercise_style"})
 
 
 def test_no_hard_coded_example_deployment_in_code():

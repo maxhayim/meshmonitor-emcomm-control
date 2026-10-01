@@ -29,7 +29,7 @@ from urllib.parse import parse_qs, quote, urlsplit
 
 import mm_emcomm_control as control
 
-PANEL_VERSION = "2.4.0"
+PANEL_VERSION = "2.5.0"
 DEFAULT_HOST = os.getenv("MM_EMCOMM_PANEL_HOST", "127.0.0.1")
 DEFAULT_PORT = int(os.getenv("MM_EMCOMM_PANEL_PORT", "8787"))
 DEFAULT_TOKEN = os.getenv("MM_EMCOMM_PANEL_TOKEN", "")
@@ -181,11 +181,11 @@ def compose_from_form(form, mode):
 COUNTER_SCRIPT = """
 (function(){
   var form = document.getElementById('compose'); if(!form) return;
-  var max = +form.dataset.max, rec = +form.dataset.rec, ex = form.dataset.exercise === '1';
+  var max = +form.dataset.max, rec = +form.dataset.rec, ex = form.dataset.exercise === '1', mark = form.dataset.marker || 'TEST';
   var counter = document.getElementById('counter'), warn = document.getElementById('counter-warn');
   function val(n){ var e = form.elements[n]; return e ? e.value.replace(/\\s+/g,' ').trim() : ''; }
   function update(){
-    var cmd = 'EMCOMM TRAFFIC ' + (ex ? 'TEST ' : '') + val('precedence');
+    var cmd = 'EMCOMM TRAFFIC ' + (ex ? mark + ' ' : '') + val('precedence');
     var re = val('reply_to'); if(re) cmd += ' RE:' + re.toUpperCase();
     form.querySelectorAll('[data-field]').forEach(function(e){
       var v = e.value.replace(/\\s+/g,' ').trim(); if(v) cmd += ' ' + e.dataset.field + ':' + v;
@@ -343,11 +343,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def compose_card(self, mode, form=None, result=None):
         exercise = mode != "live"
+        style = control.exercise_style()
         form = dict(form or {})
         if not form:
             form["incident"] = control.CONFIG.get("incident_name", "")
             form["precedence"] = "R"
-            form["message"] = "TEST MESSAGE " if exercise else ""
+            form["message"] = f"{style['message_marker']} " if exercise else ""
         options = "".join(
             f'<option value="{esc(v)}"{" selected" if form.get("precedence") == v else ""}>{esc(lbl)}</option>'
             for v, lbl in PRECEDENCE_CHOICES
@@ -357,7 +358,10 @@ class Handler(BaseHTTPRequestHandler):
             req = " required" if required else ""
             value = esc(form.get(name, ""))
             if key == "7":
-                hint = "Must begin TEST MESSAGE in EXERCISE mode." if exercise else "Sent exactly as entered. LIVE mode never adds TEST."
+                hint = (
+                    f"Must begin {style['message_marker']} in EXERCISE mode."
+                    if exercise else "Sent exactly as entered. LIVE mode never adds exercise markers."
+                )
                 inputs.append(
                     f'<div class="wide"><label for="f-{name}">{esc(label)}</label>'
                     f'<textarea id="f-{name}" name="{name}" rows="3"{req} data-field="{key}">{value}</textarea>'
@@ -387,13 +391,14 @@ class Handler(BaseHTTPRequestHandler):
                     "The panel does not transmit or log traffic; EmComm Control logs it when received.</div>" + "".join(rows)
                 )
         mode_hint = (
-            "EXERCISE / TEST: the system marks this traffic TEST (e.g. TEST P). Field 7 must begin TEST MESSAGE."
+            f"EXERCISE ({style['name']} style): the system marks this traffic {style['precedence_marker']} "
+            f"(e.g. {style['precedence_marker']} R). Field 7 must begin {style['message_marker']}."
             if exercise else "LIVE: real-world traffic. Nothing is added; do not include exercise markings."
         )
         return f"""
         <section class="card"><h2>Formal traffic (ICS-213 / NTS-style)</h2>
         <p class="muted">Compressed ICS-213-compatible fields with NTS-style precedence. Generates the compact <code>EMCOMM TRAFFIC</code> command. {esc(mode_hint)}</p>
-        <form method="post" action="/traffic/compose" id="compose" data-exercise="{'1' if exercise else '0'}" data-max="{control.MAX_LEN}" data-rec="{control.RECOMMENDED_LEN}">
+        <form method="post" action="/traffic/compose" id="compose" data-exercise="{'1' if exercise else '0'}" data-marker="{esc(style['precedence_marker'])}" data-max="{control.MAX_LEN}" data-rec="{control.RECOMMENDED_LEN}">
           <div class="formgrid">
             <div><label for="f-precedence">Precedence</label><select id="f-precedence" name="precedence">{options}</select></div>
             <div><label for="f-reply">Reply To (optional traffic ID)</label><input id="f-reply" name="reply_to" value="{esc(form.get('reply_to', ''))}" placeholder="EX-001"></div>
@@ -431,7 +436,7 @@ class Handler(BaseHTTPRequestHandler):
 
         formal_rows = "".join(
             f"<tr><td><strong>{esc(r.get('traffic_id'))}</strong></td>"
-            f"<td>{esc(control.precedence_display(r.get('precedence', ''), r.get('test_traffic')))}</td>"
+            f"<td>{esc(control.precedence_display(r.get('precedence', ''), r.get('test_traffic'), r.get('exercise_marker') or 'TEST'))}</td>"
             f"<td>{esc(r.get('field_2_to'))}</td><td>{esc(r.get('field_3_from'))}</td><td>{esc(r.get('field_4_subject'))}</td>"
             f"<td>{esc(r.get('field_7_message'))}</td><td>{esc(r.get('reply_to'))}</td><td>{esc(r.get('relay_count'))}</td>"
             f"<td><strong>{esc(STATUS_LABELS.get(r.get('status'), r.get('status')))}</strong>"
@@ -467,13 +472,20 @@ class Handler(BaseHTTPRequestHandler):
             else '<form method="post" action="/confirm/exercise"><button class="warn" type="submit">Switch to EXERCISE</button></form>'
         )
         if mode == "live":
-            banner = '<div class="banner live">LIVE MODE — real-world traffic. No TEST markings are added. Simulated injects are blocked.</div>'
+            banner = '<div class="banner live">LIVE MODE — real-world traffic. No exercise markings are added. Simulated injects are blocked.</div>'
         else:
-            banner = '<div class="banner exercise">EXERCISE / TEST MODE — all traffic is simulated. Formal message text (Field 7) must begin TEST MESSAGE.</div>'
+            style = control.exercise_style()
+            mode_word = "TEST" if style["name"] == "standard" else "SET-SAFE"
+            banner = (
+                f'<div class="banner exercise">EXERCISE / {mode_word} MODE — all traffic is simulated. '
+                f'Formal traffic is marked {esc(style["precedence_marker"])} R/P/W/EMERGENCY; '
+                f'Field 7 must begin {esc(style["message_marker"])}.</div>'
+            )
         details = [
             ("Exercise", state.get("exercise") or cfg.get("exercise_name")), ("ID", cfg.get("exercise_id")),
             ("Type", cfg.get("exercise_type")), ("Organization", cfg.get("organization")),
             ("Incident", cfg.get("incident_name")), ("Start", cfg.get("start")), ("End", cfg.get("end")),
+            ("Exercise style", control.exercise_style()["name"]),
         ]
         exercise_info = " · ".join(f"{esc(k)}: <strong>{esc(v)}</strong>" for k, v in details if v)
 

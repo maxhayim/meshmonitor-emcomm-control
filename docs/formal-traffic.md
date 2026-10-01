@@ -143,7 +143,7 @@ TEST ACK EX-003 TO EOC LOGGED. PREC TEST P. NOT A DELIVERY CONFIRMATION.
 LIVE ACK EC-003 TO EOC LOGGED. PREC P. NOT A DELIVERY CONFIRMATION.
 ```
 
-**An "ACK" from EmComm Control confirms only that the system received and logged the traffic. It does not confirm delivery to the intended recipient.** EmComm Control has no delivery-confirmation function. Receipt, logging, relay and final delivery are separate steps; only the first two are recorded automatically.
+**An "ACK" from EmComm Control confirms only that the system received and logged the traffic. It does not confirm delivery to the intended recipient.** Receipt, logging, relay and final delivery are separate steps. EmComm Control records the first three automatically; delivery is recorded only when a station sends `EMCOMM RCVD <ID>` (see [Delivery receipts and tracking](tracking.md)). That receipt is operator-reported, not a network-level guarantee.
 
 ---
 
@@ -155,7 +155,7 @@ EMCOMM RELAY <TRAFFIC-ID> [VIA <ROUTE>]
 
 A relay:
 
-- logs a separate `relay` record with `relayed_by`, `relay_time`, `relay_count` and `relay_route`
+- logs a separate `relay` record (`TRACK` and the exports show the relay count) with `relayed_by`, `relay_time`, `relay_count` and `relay_route`
 - **never rewrites** To, From, Subject, Message or any other original field
 - returns the canonical, unaltered message text for the relaying station to pass on
 

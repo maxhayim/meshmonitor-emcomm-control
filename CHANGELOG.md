@@ -2,6 +2,25 @@
 
 All notable changes to EmComm Control are documented here.
 
+## [2.4.0] - 2026-10-01
+
+### Added
+- **Delivery receipts:** `EMCOMM RCVD <ID>` (alias `DELIVERED`). The addressee's station confirms delivery; the receipt records who confirmed, when, and minutes since origination. Repeat receipts are logged, and receipts from the originating node are flagged. Receipts are documented as operator-reported.
+- **Status queries:** `EMCOMM TRACK <ID>` reports logged / relayed / delivered status over the mesh.
+- **Optional silent capture:** a catch-all Auto Responder rule running `--capture` logs ordinary mesh messages without transmitting. It handles Meshtastic first-match and MeshCore all-match rule behavior; possible system echoes are flagged.
+- **Receive metadata:** SNR, RSSI, hops, channel, direct/channel, MQTT, packet ID, node name and network are stored with every mesh-originated record.
+- **Per-station activity summary:** `stations.csv` and the panel's Station activity table.
+- New exports `stations.csv` and `captured_messages.csv`. `formal_traffic.csv` gains `status`, `delivered_by`, `delivered_time`, `delivery_minutes`, `receipt_count` and receive metadata. `summary.txt` adds delivery statistics and the most active stations.
+- Panel: delivery status in the formal traffic log, Station activity and Captured messages tables, delivery and capture counters, new CSV downloads. `/api/status` adds `relays`, `deliveries` and `captured`.
+- `docs/tracking.md`.
+
+### Changed
+- HELP lists `RELAY/RCVD/TRACK <ID>`.
+- MeshCore channel senders are identified by advertised name, since MeshCore channel messages carry a synthetic channel ID. This also keeps multipart buffers per sender.
+
+### Fixed
+- Relay, receipt and track lookups now use log order instead of one-second timestamps. Previously, after a reset that reused an ID within the same second, an old relay could be attached to the new message.
+
 ## [2.3.0] - 2026-10-01
 
 ### Added

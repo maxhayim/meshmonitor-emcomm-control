@@ -85,6 +85,7 @@
       <li>Check-in, SITREP, traffic and event counters</li>
       <li>Station, formal traffic, and recent-log tables</li>
       <li>Structured ICS-213 formal traffic composer with character counter</li>
+      <li>Delivery status, per-station activity, and optional silent capture of mesh traffic</li>
       <li>LAN binding requires an access token</li>
     </ul>
     <pre>python3 /data/scripts/mm_emcomm_panel.py --open</pre>
@@ -127,7 +128,7 @@
     <h3>Tactical</h3>
     <pre>EMCOMM CHECKIN &lt;CALLSIGN&gt; &lt;LOCATION&gt; &lt;POWER&gt; &lt;ROLE&gt;\nEMCOMM CHECKOUT &lt;CALLSIGN&gt;\nEMCOMM SITREP &lt;LOCATION&gt; &lt;STATUS&gt;\nEMCOMM STATUS\nEMCOMM HELP</pre>
     <h3>Formal (ICS-213 / NTS-style)</h3>
-    <pre>EMCOMM TRAFFIC P 2:EOC 3:FIELD1 4:STATUS 7:TEST MESSAGE COMMS OPERATIONAL\nEMCOMM TRAFFIC R RE:EX-001 2:FIELD1 3:EOC 4:STATUS 7:TEST MESSAGE RECEIVED\nEMCOMM RELAY EX-001</pre>
+    <pre>EMCOMM TRAFFIC P 2:EOC 3:FIELD1 4:STATUS 7:TEST MESSAGE COMMS OPERATIONAL\nEMCOMM TRAFFIC R RE:EX-001 2:FIELD1 3:EOC 4:STATUS 7:TEST MESSAGE RECEIVED\nEMCOMM RELAY EX-001\nEMCOMM RCVD EX-001     # addressee confirms delivery\nEMCOMM TRACK EX-001    # logged / relayed / delivered</pre>
     <p class="muted">Fields: 1 Incident · 2 To · 3 From · 4 Subject · 5 Date · 6 Time · 7 Message · 8 Approved By. Precedence R / P / W / EMERGENCY. In EXERCISE mode Field 7 must begin TEST MESSAGE. A system ACK confirms logging, not delivery. Default message limit 133 characters (120 recommended).</p>
     <p class="muted">This is an ICS-213 / NTS-style workflow for training and communications support. It is not an official FEMA ICS-213, ARRL NTS, Winlink, ARES, RACES, or government message-management system. See <a href="https://github.com/${REPO}/blob/main/docs/formal-traffic.md">docs/formal-traffic.md</a>.</p>
   ` }));

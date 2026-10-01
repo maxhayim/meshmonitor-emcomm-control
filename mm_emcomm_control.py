@@ -3,7 +3,7 @@
 #   name: EmComm Control
 #   emoji: 🚨
 #   language: Python
-__version__ = "2.3.0"
+__version__ = "2.4.0"
 
 """
 EmComm Control for MeshMonitor.
@@ -15,7 +15,7 @@ Dual-mode emergency-communications control:
 
 Traffic classes:
 - TACTICAL: CHECKIN, CHECKOUT, SITREP, STATUS, HELP (lightweight, unchanged).
-- FORMAL:   TRAFFIC, using a compressed ICS-213-compatible field structure with
+- FORMAL:   TRAFFIC (plus RELAY, RCVD, TRACK), using a compressed ICS-213-compatible field structure with
             NTS-style traffic handling (precedence, TEST marking, references,
             accurate relay). This is NOT an official FEMA ICS-213, ARRL NTS,
             or Winlink implementation; see docs/formal-traffic.md.
@@ -36,6 +36,7 @@ Local administration:
   mm_emcomm_control.py --checkout <CALLSIGN>  # local roster correction
   mm_emcomm_control.py --export [DIR]     # after-action CSV + summary export
   mm_emcomm_control.py --reset
+  mm_emcomm_control.py --capture         # silent catch-all logging rule (never transmits)
 
 Operator panel:
   mm_emcomm_panel.py --open
@@ -246,6 +247,8 @@ def default_state(mode="exercise"):
         "sitreps": 0,
         "traffic_count": 0,
         "relays": 0,
+        "deliveries": 0,
+        "captured": 0,
         "events": 0,
         "pending_traffic": {},
     }
@@ -308,6 +311,10 @@ def log_event(kind, from_node="", message="", extra=None):
         "from_node": str(from_node),
         "message": message,
     }
+    if os.getenv("MESSAGE") is not None:
+        # Mesh-originated event: keep the receive metadata MeshMonitor supplied.
+        for key, value in rx_metadata().items():
+            record.setdefault(key, value)
     if extra:
         record.update(extra)
     with LOG_FILE.open("a", encoding="utf-8") as f:
@@ -373,7 +380,20 @@ def emit(text):
         print(json.dumps({"responses": parts}, ensure_ascii=False))
 
 
+def is_meshcore():
+    return bool(os.getenv("MESHCORE_SOURCE_ID"))
+
+
+def sender_name():
+    return normalize(os.getenv("FROM_LONG_NAME") or os.getenv("FROM_SHORT_NAME") or "")
+
+
 def sender_id():
+    # MeshCore channel messages carry a synthetic channel id instead of the
+    # sender's key, so the sender's advertised name is the only way to tell
+    # stations apart there.
+    if is_meshcore() and os.getenv("IS_DIRECT", "").lower() != "true" and sender_name():
+        return sender_name()
     return normalize(
         os.getenv("FROM_ID")
         or os.getenv("FROM_NODE_ID")
@@ -381,6 +401,33 @@ def sender_id():
         or os.getenv("FROM_SHORT_NAME")
         or "unknown"
     )
+
+
+# Receive metadata exposed by MeshMonitor to Auto Responder scripts.
+RX_ENV = {
+    "from_name": ("FROM_LONG_NAME", "FROM_SHORT_NAME"),
+    "from_short_name": ("FROM_SHORT_NAME",),
+    "channel": ("CHANNEL",),
+    "is_direct": ("IS_DIRECT",),
+    "snr": ("SNR",),
+    "rssi": ("RSSI",),
+    "hops": ("HOPS",),
+    "via_mqtt": ("VIA_MQTT",),
+    "packet_id": ("PACKET_ID",),
+}
+
+
+def rx_metadata():
+    meta = {}
+    for key, names in RX_ENV.items():
+        for name in names:
+            value = normalize(os.getenv(name, ""))
+            if value and value not in {"undefined", "null"}:
+                meta[key] = value
+                break
+    if os.getenv("MESSAGE") is not None:
+        meta["network"] = "meshcore" if is_meshcore() else "meshtastic"
+    return meta
 
 
 def strip_prefix(message):
@@ -830,17 +877,18 @@ def help_text(state):
         f"{label} TACTICAL: EMCOMM CHECKIN <CALL> <LOC> <POWER> <ROLE> | CHECKOUT <CALL> | "
         "SITREP <LOC> <STATUS> | STATUS | HELP",
     ]
+    follow_up = " | RELAY/RCVD/TRACK <ID>"
     if is_exercise(state):
-        messages.append(f"FORMAL: {FORMAL_EXAMPLE}")
+        messages.append(f"FORMAL: {FORMAL_EXAMPLE}{follow_up}")
         messages.append(
             "EXERCISE: FIELD 7 MUST BEGIN TEST MESSAGE. PREC R/P/W/EMERGENCY. "
-            "OPTIONAL 1: 5: 6: 8: RE:<ID>. RELAY <ID>. SET PREFIX OK."
+            "OPTIONAL 1: 5: 6: 8: RE:<ID>. SET PREFIX OK."
         )
         if CONFIG.get("local_instructions"):
             messages.append(f"LOCAL: {CONFIG['local_instructions']}")
     else:
-        messages.append("FORMAL: EMCOMM TRAFFIC P 2:EOC 3:FIELD1 4:STATUS 7:COMMS OPERATIONAL")
-        messages.append("PREC R/P/W/EMERGENCY. OPTIONAL 1: 5: 6: 8: RE:<ID>. RELAY: EMCOMM RELAY <ID>")
+        messages.append(f"FORMAL: EMCOMM TRAFFIC P 2:EOC 3:FIELD1 4:STATUS 7:COMMS OPERATIONAL{follow_up}")
+        messages.append("PREC R/P/W/EMERGENCY. OPTIONAL 1: 5: 6: 8: RE:<ID>.")
     return messages
 
 
@@ -1015,14 +1063,10 @@ def handle_relay(body, from_node, state):
     if not m:
         return f"{label} RELAY FORMAT: EMCOMM RELAY <TRAFFIC-ID> [VIA <ROUTE>]"
     traffic_id = m.group(1).upper()
-    original = find_traffic(traffic_id)
+    original, relays, _ = traffic_history(traffic_id)
     if not original:
         return f"{label} RELAY: {traffic_id} NOT IN LOG."
-    relay_count = 1 + sum(
-        1 for r in read_log_records()
-        if r.get("kind") == "relay" and r.get("traffic_id") == traffic_id
-        and r.get("time", "") >= original.get("time", "")
-    )
+    relay_count = len(relays) + 1
     state["relays"] = int(state.get("relays", 0)) + 1
     state["events"] += 1
     save_state(state)
@@ -1039,6 +1083,151 @@ def handle_relay(body, from_node, state):
         text = []
     return [f"{label} RELAY {traffic_id} #{relay_count} LOGGED. FIELDS UNCHANGED. NOT A DELIVERY CONFIRMATION."] + text
 
+
+
+def traffic_history(traffic_id, records=None):
+    """Return (original, relays, receipts) for the latest message with this ID."""
+    # Uses log order, not timestamps: IDs restart after a reset and timestamps
+    # only have one-second resolution.
+    records = read_log_records() if records is None else records
+    index = None
+    for i, record in enumerate(records):
+        if record.get("kind") == "traffic" and record.get("traffic_id") == traffic_id:
+            index = i
+    if index is None:
+        return None, [], []
+    original = records[index]
+    later = [r for r in records[index + 1:] if r.get("traffic_id") == traffic_id]
+    relays = [r for r in later if r.get("kind") == "relay"]
+    receipts = [r for r in later if r.get("kind") == "delivery"]
+    return original, relays, receipts
+
+
+def station_label(node, state=None, records=None):
+    """Best human label for a node: checked-in callsign, else node name, else node id."""
+    node = str(node or "")
+    state = state or load_state()
+    for callsign, info in (state.get("participants") or {}).items():
+        if str(info.get("node")) == node:
+            return callsign
+    for record in reversed(records if records is not None else read_log_records()):
+        if record.get("from_node") == node:
+            if record.get("kind") == "checkin" and record.get("callsign"):
+                return record["callsign"]
+            if record.get("from_name"):
+                return record["from_name"]
+    return node or "unknown"
+
+
+def _minutes_between(start, end):
+    try:
+        delta = datetime.fromisoformat(end) - datetime.fromisoformat(start)
+        return round(delta.total_seconds() / 60, 1)
+    except Exception:
+        return ""
+
+
+def _hhmm(value):
+    try:
+        return datetime.fromisoformat(value).strftime("%H:%M")
+    except Exception:
+        return "?"
+
+
+def handle_rcvd(body, from_node, state):
+    """Addressee-side delivery confirmation: 'EMCOMM RCVD <ID>' (alias DELIVERED)."""
+    m = re.match(r"^(?:RCVD|DELIVERED)\s+(\S+)(?:\s+(.+))?$", body, re.I)
+    label = traffic_label(state)
+    if not m:
+        return f"{label} RCVD FORMAT: EMCOMM RCVD <TRAFFIC-ID>. SEND ONLY WHEN THE ADDRESSEE HAS THE MESSAGE."
+    traffic_id = m.group(1).upper()
+    records = read_log_records()
+    original, _, receipts = traffic_history(traffic_id, records)
+    if not original:
+        return f"{label} RCVD: {traffic_id} NOT IN LOG."
+    received_at = now_iso()
+    by = station_label(from_node, state, records)
+    self_confirmed = str(from_node) == str(original.get("from_node"))
+    state["deliveries"] = int(state.get("deliveries", 0)) + 1
+    state["events"] += 1
+    save_state(state)
+    log_event("delivery", from_node, body, {
+        "traffic_id": traffic_id,
+        "delivered_by": by,
+        "delivered_time": received_at,
+        "delivery_note": normalize(m.group(2) or ""),
+        "delivery_minutes": _minutes_between(original.get("time", ""), received_at),
+        "self_confirmed": self_confirmed,
+    })
+    text = f"{label} RCVD {traffic_id} DELIVERY CONFIRMED BY {by} AT {_hhmm(received_at)}. LOGGED."
+    if receipts:
+        first = receipts[0]
+        text += f" FIRST CONFIRMED BY {first.get('delivered_by', '?')} AT {_hhmm(first.get('delivered_time', ''))}."
+    if self_confirmed:
+        text += " NOTE: SENT BY ORIGINATING NODE."
+    return text
+
+
+def traffic_status(original, relays, receipts):
+    if receipts:
+        return "delivered"
+    if relays:
+        return "relayed"
+    return "logged"
+
+
+def handle_track(body, state):
+    """Report a message's handling status: logged, relayed, delivered."""
+    m = re.match(r"^TRACK\s+(\S+)$", body, re.I)
+    label = traffic_label(state)
+    if not m:
+        return f"{label} TRACK FORMAT: EMCOMM TRACK <TRAFFIC-ID>"
+    traffic_id = m.group(1).upper()
+    original, relays, receipts = traffic_history(traffic_id)
+    if not original:
+        return f"{label} TRACK: {traffic_id} NOT IN LOG."
+    prec = precedence_display(original.get("precedence", ""), original.get("test_traffic"))
+    parts = [f"{label} TRACK {traffic_id} PREC {prec} TO {original.get('field_2_to', '')}: LOGGED {_hhmm(original.get('time', ''))}"]
+    if relays:
+        parts.append(f"RELAYED {len(relays)}X (LAST {_hhmm(relays[-1].get('relay_time', ''))})")
+    if receipts:
+        first = receipts[0]
+        parts.append(
+            f"DELIVERED {_hhmm(first.get('delivered_time', ''))} BY {first.get('delivered_by', '?')} "
+            f"({first.get('delivery_minutes', '?')} MIN)"
+        )
+    else:
+        parts.append("DELIVERY NOT YET CONFIRMED")
+    return " | ".join(parts)
+
+
+# System responses that may echo back on a MeshCore channel; captured but flagged.
+SYSTEM_ECHO_RE = re.compile(
+    r"^(TEST|LIVE|EXERCISE) (ACK|RCVD|RELAY|TRACK|STATUS|TRAFFIC|PART|CHECKOUT|ANNOUNCEMENT|TACTICAL)\b"
+    r"|^TEST EXERCISE INJECT \d|^(TEST P|TEST R|TEST W|TEST EMERGENCY|P|R|W|EMERGENCY) \| ",
+)
+
+
+def handle_capture():
+    """Silent capture of ordinary mesh messages (--capture). Never transmits.
+
+    Used by a catch-all MeshMonitor Auto Responder rule. EMCOMM/SET commands
+    are left to the main rule: MeshCore runs every matching rule, so they are
+    skipped there; Meshtastic stops at the first match, so if the capture rule
+    is ordered first the command is processed normally rather than lost.
+    """
+    message = normalize(os.getenv("MESSAGE", ""))
+    if not message:
+        return
+    prefix, _ = strip_prefix(message)
+    if prefix:
+        if not is_meshcore():
+            handle_message()
+        return
+    state = load_state()
+    state["captured"] = int(state.get("captured", 0)) + 1
+    save_state(state)
+    log_event("capture", sender_id(), message, {"possible_echo": bool(SYSTEM_ECHO_RE.match(message))})
 
 def handle_checkout(body, from_node, state):
     m = re.match(r"^CHECKOUT\s+(\S+)$", body, re.I)
@@ -1094,6 +1283,10 @@ def handle_message():
         response = handle_traffic(body, from_node, state)
     elif re.match(r"^RELAY\b", body, re.I):
         response = handle_relay(body, from_node, state)
+    elif re.match(r"^(RCVD|DELIVERED)\b", body, re.I):
+        response = handle_rcvd(body, from_node, state)
+    elif re.match(r"^TRACK\b", body, re.I):
+        response = handle_track(body, state)
     elif re.match(r"^STATUS\b", body, re.I):
         response = handle_status(state)
     else:
@@ -1188,9 +1381,13 @@ FORMAL_TRAFFIC_FIELDS = [
     "traffic_id", "mode", "precedence", "test_traffic",
     "field_1_incident", "field_2_to", "field_3_from", "field_4_subject",
     "field_5_date", "field_6_time", "field_7_message", "field_8_approved_by",
-    "reply_to", "from_node", "received_time", "raw_input",
-    "syntax", "legacy_precedence", "parts", "relay_count",
+    "reply_to", "from_node", "from_station", "received_time", "raw_input",
+    "syntax", "legacy_precedence", "parts",
+    "status", "relay_count", "delivered_by", "delivered_time", "delivery_minutes", "receipt_count",
+    "snr", "rssi", "hops", "channel", "network",
 ]
+
+RX_FIELDS = ["from_name", "channel", "is_direct", "snr", "rssi", "hops", "via_mqtt", "packet_id", "network"]
 
 TRAFFIC_LOG_FIELDS = [
     "time", "mode", "kind", "from_node", "callsign", "location", "power", "role",
@@ -1200,31 +1397,166 @@ TRAFFIC_LOG_FIELDS = [
     "field_5_date", "field_6_time", "field_7_message", "field_8_approved_by",
     "received_time", "raw_input", "parts",
     "relayed_by", "relay_time", "relay_count", "relay_route",
+    "delivered_by", "delivered_time", "delivery_minutes", "delivery_note", "self_confirmed",
+    "possible_echo",
+] + RX_FIELDS
+
+CAPTURE_FIELDS = ["time", "mode", "from_node", "from_name", "message", "possible_echo"] + RX_FIELDS[1:]
+
+STATION_FIELDS = [
+    "station", "nodes", "names", "checkins", "checkouts", "sitreps", "traffic_sent",
+    "relays", "deliveries_confirmed", "captured_messages", "messages_total",
+    "first_heard", "last_heard", "avg_snr", "best_snr", "min_hops", "max_hops", "networks",
 ]
+
+# Event sources that are local administration, not stations on the mesh.
+NON_STATION_SOURCES = {"", "web-panel", "unknown"}
 
 
 def formal_traffic_rows(records=None):
-    """Formal traffic records (legacy upgraded) with relay counts, for CSV export."""
+    """Formal traffic (legacy upgraded) with relay/delivery status, for CSV export and the panel."""
     records = read_log_records() if records is None else records
+    labels = node_labels(records)
     rows = []
     for record in records:
-        if record.get("kind") == "traffic":
-            rows.append(dict(record, relay_count=0))
-        elif record.get("kind") == "relay":
-            for row in reversed(rows):
-                if row.get("traffic_id") == record.get("traffic_id"):
-                    row["relay_count"] += 1
-                    break
+        kind = record.get("kind")
+        if kind == "traffic":
+            rows.append(dict(
+                record, relay_count=0, receipt_count=0, status="logged",
+                delivered_by="", delivered_time="", delivery_minutes="",
+                from_station=labels.get(record.get("from_node", ""), record.get("from_node", "")),
+            ))
+            continue
+        if kind not in {"relay", "delivery"}:
+            continue
+        for row in reversed(rows):
+            if row.get("traffic_id") != record.get("traffic_id"):
+                continue
+            if kind == "relay":
+                row["relay_count"] += 1
+                if row["status"] == "logged":
+                    row["status"] = "relayed"
+            else:
+                row["receipt_count"] += 1
+                if row["status"] != "delivered":
+                    row.update(
+                        status="delivered",
+                        delivered_by=record.get("delivered_by", ""),
+                        delivered_time=record.get("delivered_time", ""),
+                        delivery_minutes=record.get("delivery_minutes", ""),
+                    )
+            break
     return rows
 
 
+def node_labels(records):
+    """Map each node to its station label: last check-in callsign, else node name, else node id."""
+    labels = {}
+    for record in records:
+        node = record.get("from_node", "")
+        if node in NON_STATION_SOURCES:
+            continue
+        if record.get("kind") == "checkin" and record.get("callsign"):
+            labels[node] = record["callsign"]
+        elif node not in labels and record.get("from_name"):
+            labels[node] = record["from_name"]
+    return labels
+
+
+def _float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def station_rows(records=None):
+    """Per-station activity summary across check-ins, SITREPs, formal traffic, relays, receipts and capture."""
+    records = read_log_records() if records is None else records
+    labels = node_labels(records)
+    counters = {
+        "checkin": "checkins", "checkout": "checkouts", "sitrep": "sitreps", "traffic": "traffic_sent",
+        "relay": "relays", "delivery": "deliveries_confirmed", "capture": "captured_messages",
+    }
+    stations = {}
+    for record in records:
+        node = record.get("from_node", "")
+        kind = record.get("kind")
+        if node in NON_STATION_SOURCES or kind not in counters:
+            continue
+        if kind == "capture" and record.get("possible_echo"):
+            continue
+        label = labels.get(node, node)
+        row = stations.setdefault(label, dict(
+            {f: 0 for f in counters.values()}, station=label, nodes=set(), names=set(), networks=set(),
+            snrs=[], hops=[], first_heard=record.get("time", ""), last_heard="",
+        ))
+        row[counters[kind]] += 1
+        row["nodes"].add(node)
+        if record.get("from_name"):
+            row["names"].add(record["from_name"])
+        if record.get("network"):
+            row["networks"].add(record["network"])
+        snr = _float(record.get("snr"))
+        if snr is not None:
+            row["snrs"].append(snr)
+        hops = _float(record.get("hops"))
+        if hops is not None:
+            row["hops"].append(int(hops))
+        row["last_heard"] = record.get("time", "")
+    result = []
+    for label in sorted(stations):
+        row = stations[label]
+        snrs, hops = row.pop("snrs"), row.pop("hops")
+        row["messages_total"] = sum(row[f] for f in counters.values())
+        row["avg_snr"] = round(sum(snrs) / len(snrs), 1) if snrs else ""
+        row["best_snr"] = max(snrs) if snrs else ""
+        row["min_hops"] = min(hops) if hops else ""
+        row["max_hops"] = max(hops) if hops else ""
+        for key in ("nodes", "names", "networks"):
+            row[key] = " ".join(sorted(row[key]))
+        result.append(row)
+    return result
+
+
+def captured_rows(records=None):
+    records = read_log_records() if records is None else records
+    return [dict(r, message=r.get("message", "")) for r in records if r.get("kind") == "capture"]
+
+
+def _write_csv(path, fieldnames, rows):
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+
+
+def delivery_stats(formal):
+    delivered = [r for r in formal if r.get("status") == "delivered"]
+    minutes = sorted(m for m in (_float(r.get("delivery_minutes")) for r in delivered) if m is not None)
+    median = ""
+    if minutes:
+        mid = len(minutes) // 2
+        median = minutes[mid] if len(minutes) % 2 else round((minutes[mid - 1] + minutes[mid]) / 2, 1)
+    return {
+        "total": len(formal),
+        "delivered": len(delivered),
+        "relayed": sum(1 for r in formal if r.get("relay_count")),
+        "median_minutes": median,
+        "max_minutes": minutes[-1] if minutes else "",
+    }
+
+
 def export_bundle(out_dir=None):
-    """Write roster.csv, traffic_log.csv, formal_traffic.csv, and summary.txt for after-action review."""
+    """Write roster, traffic log, formal traffic, stations, captured messages, and summary for review."""
     state = load_state()
     out = Path(out_dir) if out_dir else DATA_DIR / f"export_{datetime.now(LOCAL_TZ).strftime('%Y%m%dT%H%M%S')}"
     out.mkdir(parents=True, exist_ok=True)
     records = read_log_records()
     formal = formal_traffic_rows(records)
+    stations = station_rows(records)
+    captured = captured_rows(records)
 
     with (out / "roster.csv").open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
@@ -1235,21 +1567,15 @@ def export_bundle(out_dir=None):
                 info.get("role", ""), info.get("node", ""), info.get("time", ""),
             ])
 
-    with (out / "traffic_log.csv").open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=TRAFFIC_LOG_FIELDS, extrasaction="ignore")
-        writer.writeheader()
-        for record in records:
-            writer.writerow(record)
-
-    with (out / "formal_traffic.csv").open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=FORMAL_TRAFFIC_FIELDS, extrasaction="ignore")
-        writer.writeheader()
-        for row in formal:
-            writer.writerow(row)
+    _write_csv(out / "traffic_log.csv", TRAFFIC_LOG_FIELDS, records)
+    _write_csv(out / "formal_traffic.csv", FORMAL_TRAFFIC_FIELDS, formal)
+    _write_csv(out / "stations.csv", STATION_FIELDS, stations)
+    _write_csv(out / "captured_messages.csv", CAPTURE_FIELDS, captured)
 
     by_prec = {}
     for row in formal:
         by_prec[row.get("precedence", "")] = by_prec.get(row.get("precedence", ""), 0) + 1
+    stats = delivery_stats(formal)
 
     with (out / "summary.txt").open("w", encoding="utf-8") as f:
         f.write("EmComm Control after-action export\n")
@@ -1266,16 +1592,33 @@ def export_bundle(out_dir=None):
         f.write(f"Started: {state.get('started') or 'n/a'}\n")
         f.write(f"Ended: {state.get('ended') or 'n/a'}\n")
         f.write(f"Stations checked in: {len(state.get('participants', {}))}\n")
+        f.write(f"Stations heard (all logged activity): {len(stations)}\n")
         f.write(f"SITREPs: {state.get('sitreps', 0)}\n")
         f.write(f"Traffic records: {state.get('traffic_count', 0)}\n")
         f.write(f"Relays logged: {state.get('relays', 0)}\n")
+        f.write(
+            f"Formal traffic delivery (all logged): {stats['delivered']} of {stats['total']} confirmed delivered"
+            + (f"; median {stats['median_minutes']} min, longest {stats['max_minutes']} min" if stats["delivered"] else "")
+            + f"; {stats['relayed']} relayed\n"
+        )
+        f.write(f"Captured mesh messages: {len(captured)}\n")
         f.write(f"Total logged events: {state.get('events', 0)}\n")
         if by_prec:
             f.write("Formal traffic by precedence (all logged): "
                     + ", ".join(f"{k or '?'}={v}" for k, v in sorted(by_prec.items())) + "\n")
+        if stations:
+            f.write("\nMost active stations:\n")
+            for row in sorted(stations, key=lambda r: -r["messages_total"])[:10]:
+                f.write(
+                    f"  {row['station']}: {row['messages_total']} events "
+                    f"(traffic {row['traffic_sent']}, relays {row['relays']}, receipts {row['deliveries_confirmed']}, "
+                    f"captured {row['captured_messages']})\n"
+                )
         f.write(
-            "Note: traffic IDs (EX-/EC-) are internal EmComm Control identifiers, not NTS message numbers. "
-            "ACKs confirm logging by EmComm Control, not delivery to the addressee.\n"
+            "\nNote: traffic IDs (EX-/EC-) are internal EmComm Control identifiers, not NTS message numbers. "
+            "ACKs confirm logging by EmComm Control. 'Delivered' means a station sent EMCOMM RCVD for the "
+            "message; it is operator-reported, not a network-level delivery guarantee. Capture only includes "
+            "messages MeshMonitor passed to the capture rule.\n"
         )
 
     return out
@@ -1290,6 +1633,10 @@ def main():
     parser.add_argument("--reset", action="store_true", help="Reset counters/state while preserving current mode.")
     parser.add_argument("--checkout", help="Remove a callsign from the roster (local correction).")
     parser.add_argument(
+        "--capture", action="store_true",
+        help="Silently log the inbound MESSAGE (catch-all Auto Responder rule). Never transmits.",
+    )
+    parser.add_argument(
         "--export", nargs="?", const="", metavar="DIR",
         help="Export roster/traffic CSV + summary for after-action review. Optional output directory.",
     )
@@ -1300,6 +1647,12 @@ def main():
     ])
     if selected > 1:
         emit("Choose only one administrative action at a time.")
+        return
+    if args.capture:
+        if selected:
+            emit("--capture cannot be combined with administrative actions.")
+            return
+        handle_capture()
         return
     if args.mode is not None:
         set_mode(args.mode, args.confirm_live)

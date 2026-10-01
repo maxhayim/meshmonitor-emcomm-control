@@ -41,6 +41,9 @@ EmComm Control allows operators to:
 - Submit and log SITREPs
 - Originate formal ICS-213 / NTS-style traffic (Fields 1–8, R/P/W/EMERGENCY precedence, TEST marking in exercises)
 - Log formal traffic structurally with internal traffic IDs, replies (`RE:`), relays, and multipart reassembly
+- Track each formal message from logged → relayed → **delivered** (`EMCOMM RCVD`) and query status over the mesh (`EMCOMM TRACK`)
+- Optionally capture ordinary mesh traffic silently, with SNR, hops, and channel, for after-action review
+- Summarize activity per station: check-ins, SITREPs, traffic, relays, receipts, captured messages, and signal/hop coverage
 - Request current operational statistics
 - Send operator-supplied announcements
 - Run timed **simulated** exercise injects while in EXERCISE mode
@@ -89,7 +92,8 @@ The mode indicator makes it immediately clear whether the system is in **EXERCIS
 - **Switch to EXERCISE** button
 - **Refresh Status**
 - **Reset Operation** with confirmation
-- Current station/check-in, SITREP, traffic, and event counts
+- Current station/check-in, SITREP, traffic, delivery, captured-message, and event counts
+- **Formal traffic log** with logged / relayed / delivered status, **Station activity** summary, and **Captured mesh messages** table
 - Clear **EXERCISE / TEST** or **LIVE** banner
 - **Formal traffic composer** with structured ICS-213 fields (Incident Name, Precedence, To, From, Subject, Date, Time, Message, Approved By, Reply To) that generates the compact `EMCOMM TRAFFIC` command — multipart when needed — with a live `current / maximum` character counter and a soft warning above 120 characters. The panel only generates commands; send them from your Meshtastic or MeshCore client.
 - Formal traffic log table and `formal_traffic.csv` download
@@ -205,6 +209,7 @@ Check the current mode:
 │   ├── index.html
 │   ├── index.js
 │   ├── formal-traffic.md   # ICS-213 / NTS-style formal traffic reference
+│   ├── tracking.md         # Delivery receipts, TRACK, capture, station activity
 │   └── examples/           # Example exercise configurations (not defaults)
 ├── tests/                  # pytest suite
 ├── ISSUE_TEMPLATE/
@@ -287,6 +292,22 @@ Script path:
 
 The `SET` prefix is accepted only in EXERCISE mode. LIVE mode requires `EMCOMM`.
 
+### Rule 3 (optional) — Silent capture of ordinary traffic
+
+To also log ordinary channel messages during a SET or activation, add a catch-all rule. It **never transmits**.
+
+Trigger regex:
+
+```regex
+.*
+```
+
+Action: Script
+Script path: `/data/scripts/mm_emcomm_control.py`
+Script arguments: `--capture`
+
+On **Meshtastic**, place this rule **after** Rules 1 and 2, because only the first matching rule runs. On **MeshCore**, every matching rule runs; capture ignores `EMCOMM`/`SET` commands there, so nothing is logged twice. Captured messages include SNR, hops, and channel where MeshMonitor provides them. See [docs/tracking.md](docs/tracking.md) for limits and privacy notes.
+
 ---
 
 ## Mesh commands
@@ -306,6 +327,8 @@ EMCOMM HELP
 ```text
 EMCOMM TRAFFIC <PRECEDENCE> [RE:<ID>] 2:<TO> 3:<FROM> 4:<SUBJECT> 7:<MESSAGE>
 EMCOMM RELAY <TRAFFIC-ID> [VIA <ROUTE>]
+EMCOMM RCVD <TRAFFIC-ID>          # addressee confirms delivery (alias: DELIVERED)
+EMCOMM TRACK <TRAFFIC-ID>         # logged / relayed / delivered status
 ```
 
 - Required: Field 2 To, 3 From, 4 Subject, 7 Message. Optional: 1 Incident Name, 5 Date, 6 Time, 8 Approved By (last), `RE:<ID>`.
@@ -324,9 +347,17 @@ EMCOMM TRAFFIC R RE:EX-001 2:FIELD1 3:EOC 4:STATUS 7:TEST MESSAGE RECEIVED THANK
 → TEST ACK EX-002 RE:EX-001 TO FIELD1 LOGGED. PREC TEST R. NOT A DELIVERY CONFIRMATION.
 ```
 
-**An ACK from EmComm Control confirms that the system received and logged the traffic. It does not confirm delivery to the intended recipient.** Traffic IDs (`EX-###`, `EC-###`) are internal identifiers, not NTS message numbers.
+**An ACK from EmComm Control confirms that the system received and logged the traffic. It does not confirm delivery to the intended recipient.** Delivery is recorded only when a station sends `EMCOMM RCVD <ID>`, and that receipt is operator-reported. Traffic IDs (`EX-###`, `EC-###`) are internal identifiers, not NTS message numbers.
 
-Full reference: [docs/formal-traffic.md](docs/formal-traffic.md).
+```text
+EMCOMM RCVD EX-001
+→ TEST RCVD EX-001 DELIVERY CONFIRMED BY KN4EOC AT 11:10. LOGGED.
+
+EMCOMM TRACK EX-001
+→ TEST TRACK EX-001 PREC TEST P TO EOC: LOGGED 11:05 | RELAYED 1X (LAST 11:07) | DELIVERED 11:10 BY KN4EOC (5.0 MIN)
+```
+
+Full references: [docs/formal-traffic.md](docs/formal-traffic.md) and [docs/tracking.md](docs/tracking.md).
 
 ### Legacy syntax
 
@@ -424,7 +455,14 @@ The script labels the announcement according to the active mode. In EXERCISE mod
 /data/scripts/mm_emcomm_control.py --export /path/to/output-dir
 ```
 
-Writes `roster.csv`, `traffic_log.csv`, `formal_traffic.csv` (one row per formal message with ICS-213 fields and relay counts), and `summary.txt`. With no directory given, the export is written under the script's data directory, timestamped. The operator panel offers the same CSV files as one-click downloads.
+Writes:
+
+- `roster.csv`
+- `traffic_log.csv`
+- `formal_traffic.csv`: one row per formal message with ICS-213 fields and delivery status (logged / relayed / delivered, who confirmed, minutes to delivery)
+- `stations.csv`: per-station activity and SNR/hop coverage
+- `captured_messages.csv`
+- `summary.txt`: delivery totals and the most active stations With no directory given, the export is written under the script's data directory, timestamped. The operator panel offers the same CSV files as one-click downloads.
 
 Reset preserves the current LIVE / EXERCISE mode.
 
@@ -533,6 +571,7 @@ This project follows semantic versioning in the same style as `meshmonitor-radio
 - **v2.1.0** — adds the optional browser Operator Control Panel for one-click LIVE / EXERCISE switching and operational status
 - **v2.2.0** — adds roster checkout, traffic precedence, and after-action CSV export (CLI and panel)
 - **v2.3.0** — compressed ICS-213 / NTS-style formal traffic, TEST validation, replies, relays, multipart, 133-character default limit, generic exercise configuration
+- **v2.4.0** — message tracking: delivery receipts (`RCVD`), status queries (`TRACK`), optional silent capture of mesh traffic, receive metadata (SNR/hops/channel), per-station activity summary
 
 See [CHANGELOG.md](CHANGELOG.md) for details.
 

@@ -124,7 +124,29 @@ EMCOMM TRAFFIC R RE:EX-007 1:SET 2:SHELTER1 3:NCS 4:WATER 7:TEST MESSAGE REQUEST
 → TEST ACK EX-008 RE:EX-007 TO SHELTER1 LOGGED. PREC TEST R. NOT A DELIVERY CONFIRMATION.
 ```
 
-Remember that the system ACK confirms **logging only**. Confirm delivery to the addressee under your own net procedure.
+Once the request reaches Net Control, the NCS station confirms delivery:
+
+```text
+EMCOMM RCVD EX-007
+→ TEST RCVD EX-007 DELIVERY CONFIRMED BY NCS1 AT 11:10. LOGGED.
+```
+
+Any station can check status:
+
+```text
+EMCOMM TRACK EX-007
+→ TEST TRACK EX-007 PREC TEST P TO NCS: LOGGED 11:05 | RELAYED 1X (LAST 11:07) | DELIVERED 11:10 BY NCS1 (5.0 MIN)
+```
+
+The system ACK confirms **logging only**. A receipt (`RCVD`) is operator-reported delivery.
+
+### Optional: capture all exercise-channel traffic
+
+To include ordinary chat in the after-action review, add the silent capture rule from [docs/tracking.md](../tracking.md):
+
+- trigger `.*`, script `mm_emcomm_control.py`, arguments `--capture`
+- scoped to the exercise channel
+- on Meshtastic, ordered after the `EMCOMM` / `SET` rules
 
 After the exercise:
 
@@ -132,6 +154,6 @@ After the exercise:
 /data/scripts/mm_emcomm_control.py --export
 ```
 
-This writes `roster.csv`, `traffic_log.csv`, `formal_traffic.csv`, and `summary.txt` for the after-action review.
+This writes `roster.csv`, `traffic_log.csv`, `formal_traffic.csv` (with delivery status), `stations.csv` (per-station activity and SNR/hop coverage), `captured_messages.csv`, and `summary.txt` for the after-action review.
 
 If real emergency traffic occurs during the SET, stop treating it as exercise traffic and handle it as real-world traffic under your local operating procedure. See [Real-world traffic during an exercise](../formal-traffic.md#real-world-traffic-during-an-exercise).

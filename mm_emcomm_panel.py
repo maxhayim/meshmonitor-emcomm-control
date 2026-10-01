@@ -29,7 +29,7 @@ from urllib.parse import parse_qs, quote, urlsplit
 
 import mm_emcomm_control as control
 
-PANEL_VERSION = "2.3.0"
+PANEL_VERSION = "2.4.0"
 DEFAULT_HOST = os.getenv("MM_EMCOMM_PANEL_HOST", "127.0.0.1")
 DEFAULT_PORT = int(os.getenv("MM_EMCOMM_PANEL_PORT", "8787"))
 DEFAULT_TOKEN = os.getenv("MM_EMCOMM_PANEL_TOKEN", "")
@@ -199,9 +199,12 @@ COUNTER_SCRIPT = """
 """
 
 
-def formal_traffic_recent(limit=25):
-    rows = control.formal_traffic_rows()
+def formal_traffic_recent(limit=25, records=None):
+    rows = control.formal_traffic_rows(records)
     return list(reversed(rows[-limit:]))
+
+
+STATUS_LABELS = {"logged": "Logged", "relayed": "Relayed", "delivered": "Delivered"}
 
 
 def esc(value):
@@ -408,7 +411,10 @@ class Handler(BaseHTTPRequestHandler):
         mode_class = "live" if mode == "live" else "exercise"
         participants = state.get("participants", {}) or {}
         events = read_recent_events(40)
-        formal = formal_traffic_recent(25)
+        records = control.read_log_records()
+        formal = formal_traffic_recent(25, records)
+        stations = control.station_rows(records)
+        captured = list(reversed(control.captured_rows(records)[-25:]))
         notice = f'<div class="notice good">{esc(message)}</div>' if message else ""
         cfg = control.CONFIG
 
@@ -428,9 +434,27 @@ class Handler(BaseHTTPRequestHandler):
             f"<td>{esc(control.precedence_display(r.get('precedence', ''), r.get('test_traffic')))}</td>"
             f"<td>{esc(r.get('field_2_to'))}</td><td>{esc(r.get('field_3_from'))}</td><td>{esc(r.get('field_4_subject'))}</td>"
             f"<td>{esc(r.get('field_7_message'))}</td><td>{esc(r.get('reply_to'))}</td><td>{esc(r.get('relay_count'))}</td>"
-            f"<td>{esc(r.get('received_time'))}</td></tr>"
+            f"<td><strong>{esc(STATUS_LABELS.get(r.get('status'), r.get('status')))}</strong>"
+            + (f"<br><span class=\"muted\">by {esc(r.get('delivered_by'))} · {esc(r.get('delivery_minutes'))} min</span>" if r.get('status') == 'delivered' else "")
+            + f"</td><td>{esc(r.get('received_time'))}</td></tr>"
             for r in formal
-        ) or '<tr><td colspan="9" class="muted">No formal traffic logged yet.</td></tr>'
+        ) or '<tr><td colspan="10" class="muted">No formal traffic logged yet.</td></tr>'
+
+        activity_rows = "".join(
+            f"<tr><td><strong>{esc(r['station'])}</strong><br><span class=\"muted\">{esc(r['names'])}</span></td>"
+            f"<td>{esc(r['checkins'])}</td><td>{esc(r['sitreps'])}</td><td>{esc(r['traffic_sent'])}</td><td>{esc(r['relays'])}</td>"
+            f"<td>{esc(r['deliveries_confirmed'])}</td><td>{esc(r['captured_messages'])}</td><td>{esc(r['avg_snr'])}</td>"
+            f"<td>{esc(r['min_hops'])}–{esc(r['max_hops'])}</td><td>{esc(r['last_heard'])}</td></tr>"
+            for r in sorted(stations, key=lambda r: -r["messages_total"])
+        ) or '<tr><td colspan="10" class="muted">No station activity logged yet.</td></tr>'
+
+        capture_rows = "".join(
+            f"<tr><td>{esc(r.get('time'))}</td><td>{esc(r.get('from_name') or r.get('from_node'))}</td><td>{esc(r.get('channel'))}</td>"
+            f"<td>{esc(r.get('snr'))}</td><td>{esc(r.get('hops'))}</td><td>{esc(r.get('message'))}"
+            + (' <span class="muted">(possible system echo)</span>' if r.get('possible_echo') else "")
+            + "</td></tr>"
+            for r in captured
+        ) or '<tr><td colspan="6" class="muted">No captured messages. Add the optional --capture Auto Responder rule to log ordinary mesh traffic.</td></tr>'
 
         live_action = (
             '<span class="button good">LIVE is active</span>'
@@ -462,13 +486,17 @@ class Handler(BaseHTTPRequestHandler):
           <div class="card"><div class="muted">Checked-in stations</div><div class="metric">{len(participants)}</div></div>
           <div class="card"><div class="muted">SITREPs</div><div class="metric">{int(state.get('sitreps',0))}</div></div>
           <div class="card"><div class="muted">Traffic records</div><div class="metric">{int(state.get('traffic_count',0))}</div></div>
+          <div class="card"><div class="muted">Delivered (RCVD)</div><div class="metric">{int(state.get('deliveries',0))}</div></div>
+          <div class="card"><div class="muted">Captured messages</div><div class="metric">{int(state.get('captured',0))}</div></div>
           <div class="card"><div class="muted">Logged events</div><div class="metric">{int(state.get('events',0))}</div></div>
         </section>
         {self.compose_card(mode, form, result)}
-        <section class="card"><h2>Formal traffic log</h2><div class="scroll"><table><thead><tr><th>ID</th><th>Prec</th><th>2. To</th><th>3. From</th><th>4. Subject</th><th>7. Message</th><th>RE</th><th>Relays</th><th>Received</th></tr></thead><tbody>{formal_rows}</tbody></table></div><p class="muted">IDs are internal EmComm Control identifiers, not NTS message numbers. A logged ACK confirms receipt by EmComm Control, not delivery to the addressee.</p></section>
+        <section class="card"><h2>Formal traffic log</h2><div class="scroll"><table><thead><tr><th>ID</th><th>Prec</th><th>2. To</th><th>3. From</th><th>4. Subject</th><th>7. Message</th><th>RE</th><th>Relays</th><th>Status</th><th>Received</th></tr></thead><tbody>{formal_rows}</tbody></table></div><p class="muted">IDs are internal EmComm Control identifiers, not NTS message numbers. A logged ACK confirms receipt by EmComm Control, not delivery. <strong>Delivered</strong> means a station sent <code>EMCOMM RCVD &lt;ID&gt;</code>; it is operator-reported.</p></section>
+        <section class="card"><h2>Station activity</h2><div class="scroll"><table><thead><tr><th>Station</th><th>Check-ins</th><th>SITREPs</th><th>Traffic sent</th><th>Relays</th><th>Receipts</th><th>Captured</th><th>Avg SNR</th><th>Hops</th><th>Last heard</th></tr></thead><tbody>{activity_rows}</tbody></table></div><p class="muted">Stations are labeled by checked-in callsign when known, otherwise by node name or ID. SNR and hops come from MeshMonitor receive data.</p></section>
+        <section class="card"><h2>Captured mesh messages</h2><div class="scroll"><table><thead><tr><th>Time</th><th>From</th><th>Ch</th><th>SNR</th><th>Hops</th><th>Message</th></tr></thead><tbody>{capture_rows}</tbody></table></div><p class="muted">Silent capture of ordinary messages via the optional catch-all rule. Nothing is transmitted. MeshMonitor's own message history remains the authoritative record.</p></section>
         <section class="card"><h2>Check-ins</h2><div class="scroll"><table><thead><tr><th>Callsign</th><th>Location</th><th>Power</th><th>Role</th><th>Last check-in</th><th>Actions</th></tr></thead><tbody>{station_rows}</tbody></table></div><p class="muted">Removing a station only corrects the roster; it does not notify the station and can be redone by checking in again.</p></section>
         <section class="card"><h2>Recent operational log</h2><div class="scroll"><table><thead><tr><th>Time</th><th>Mode</th><th>Type</th><th>Source</th><th>Details</th></tr></thead><tbody>{event_rows}</tbody></table></div></section>
-        <section class="card"><h2>After-action export</h2><p class="muted">Download the current roster, full traffic/event log, and structured formal traffic as CSV for drill or incident review.</p><div class="actions"><a class="button primary" href="/export/roster.csv">Download roster CSV</a><a class="button primary" href="/export/traffic.csv">Download traffic log CSV</a><a class="button primary" href="/export/formal_traffic.csv">Download formal traffic CSV</a></div></section>
+        <section class="card"><h2>After-action export</h2><p class="muted">Download the current roster, full traffic/event log, formal traffic with delivery status, station activity, and captured messages as CSV for drill or incident review.</p><div class="actions"><a class="button primary" href="/export/roster.csv">Download roster CSV</a><a class="button primary" href="/export/traffic.csv">Download traffic log CSV</a><a class="button primary" href="/export/formal_traffic.csv">Download formal traffic CSV</a><a class="button primary" href="/export/stations.csv">Download station activity CSV</a><a class="button primary" href="/export/captured_messages.csv">Download captured messages CSV</a></div></section>
         <section class="card"><h2>Operational note</h2><p>This panel changes EmComm Control state and displays its local logs. It does not replace an EOC incident-management, dispatch, CAD, records, or approved emergency communications system, the official ICS-213 form, Winlink forms, or NTS radiogram software.</p><p class="muted">For LAN access, run with an access token and place the panel only on a trusted management network or behind an authenticated TLS reverse proxy.</p></section>
         """
         nonce = secrets.token_urlsafe(16)
@@ -524,6 +552,9 @@ class Handler(BaseHTTPRequestHandler):
                 "stations": len(state.get("participants", {}) or {}),
                 "sitreps": int(state.get("sitreps", 0)),
                 "traffic": int(state.get("traffic_count", 0)),
+                "relays": int(state.get("relays", 0)),
+                "deliveries": int(state.get("deliveries", 0)),
+                "captured": int(state.get("captured", 0)),
                 "events": int(state.get("events", 0)),
             })
             return
@@ -541,6 +572,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/export/traffic.csv":
             self.send_csv("emcomm_traffic_log.csv", build_csv(control.read_log_records(), control.TRAFFIC_LOG_FIELDS))
+            return
+        if parsed.path == "/export/stations.csv":
+            self.send_csv("emcomm_stations.csv", build_csv(control.station_rows(), control.STATION_FIELDS))
+            return
+        if parsed.path == "/export/captured_messages.csv":
+            self.send_csv("emcomm_captured_messages.csv", build_csv(control.captured_rows(), control.CAPTURE_FIELDS))
             return
         if parsed.path == "/export/formal_traffic.csv":
             self.send_csv("emcomm_formal_traffic.csv", build_csv(control.formal_traffic_rows(), control.FORMAL_TRAFFIC_FIELDS))

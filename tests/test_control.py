@@ -57,23 +57,30 @@ def test_sitrep_increments_counter(monkeypatch, capsys):
     assert state["sitreps"] == 1
 
 
-def test_traffic_defaults_to_routine_precedence(monkeypatch, capsys):
+def test_legacy_traffic_defaults_to_routine_precedence(monkeypatch, capsys):
     resp = send(monkeypatch, capsys, "EMCOMM TRAFFIC EOC Need more water at shelter 3")
-    assert "[ROUTINE]" in resp["response"]
+    assert "PREC TEST R" in resp["response"]
+    assert "LEGACY FORMAT" in resp["response"]
     state = control.load_state()
     assert state["traffic_count"] == 1
 
 
-def test_traffic_explicit_precedence(monkeypatch, capsys):
+def test_legacy_immediate_maps_to_priority_with_note(monkeypatch, capsys):
     resp = send(monkeypatch, capsys, "EMCOMM TRAFFIC EOC IMMEDIATE Shelter roof collapse")
-    assert "[IMMEDIATE]" in resp["response"]
+    assert "PREC TEST P" in resp["response"]
+    assert "LEGACY IMMEDIATE LOGGED AS P" in resp["response"]
+    record = control.find_traffic("EX-001")
+    assert record["precedence"] == "P"
+    assert record["legacy_precedence"] == "IMMEDIATE"
 
 
-def test_traffic_precedence_word_not_confused_with_body(monkeypatch, capsys):
-    # "Routine" appearing as the first word of an ordinary message is treated as precedence,
-    # by design: precedence is always the optional token immediately after <TO>.
+def test_legacy_precedence_word_not_confused_with_body(monkeypatch, capsys):
+    # Precedence is always the optional token immediately after <TO> in legacy syntax.
     resp = send(monkeypatch, capsys, "EMCOMM TRAFFIC EOC PRIORITY Generator fuel low")
-    assert "[PRIORITY]" in resp["response"]
+    assert "PREC TEST P" in resp["response"]
+    record = control.find_traffic("EX-001")
+    assert record["field_7_message"] == "Generator fuel low"
+    assert record["field_2_to"] == "EOC"
 
 
 def test_set_prefix_blocked_in_live(monkeypatch, capsys):

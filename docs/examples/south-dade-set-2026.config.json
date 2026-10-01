@@ -1,0 +1,10 @@
+{
+  "exercise_name": "Simulated Emergency Test (SET)",
+  "exercise_id": "SET-2026",
+  "exercise_type": "Simulated Emergency Test",
+  "organization": "South Dade GMRS Club",
+  "incident_name": "SET",
+  "start": "2026-10-03T09:00",
+  "end": "2026-10-03T12:00",
+  "local_instructions": "NCS ON MESH. CHECK IN FIRST. FORMAL TRAFFIC AFTER INJECT 6."
+}

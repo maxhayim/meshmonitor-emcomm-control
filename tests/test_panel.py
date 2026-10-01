@@ -101,3 +101,96 @@ def test_dashboard_requires_auth_when_token_set():
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+FORM = {
+    "precedence": "P", "to": "EOC", "from": "FIELD1", "subject": "STATUS",
+    "message": "TEST MESSAGE COMMS OPERATIONAL",
+}
+
+
+def test_compose_from_form_exercise():
+    result = panel.compose_from_form(dict(FORM), "exercise")
+    assert result["errors"] == []
+    assert [c["text"] for c in result["commands"]] == [
+        "EMCOMM TRAFFIC TEST P 2:EOC 3:FIELD1 4:STATUS 7:TEST MESSAGE COMMS OPERATIONAL"
+    ]
+    report = result["commands"][0]["report"]
+    assert report["limit"] == control.MAX_LEN
+    assert report["length"] == len(result["commands"][0]["text"])
+
+
+def test_compose_from_form_requires_test_message_in_exercise():
+    form = dict(FORM, message="COMMS OPERATIONAL")
+    result = panel.compose_from_form(form, "exercise")
+    assert any("TEST MESSAGE" in e for e in result["errors"])
+    assert result["commands"] == []
+
+
+def test_compose_from_form_live_has_no_test():
+    form = dict(FORM, message="COMMS OPERATIONAL", reply_to="ec-004")
+    result = panel.compose_from_form(form, "live")
+    assert result["errors"] == []
+    text = result["commands"][0]["text"]
+    assert text == "EMCOMM TRAFFIC P RE:EC-004 2:EOC 3:FIELD1 4:STATUS 7:COMMS OPERATIONAL"
+    assert "TEST" not in text
+
+
+def test_compose_from_form_multipart_and_warning():
+    form = dict(FORM, message="TEST MESSAGE " + "SUPPLIES NEEDED " * 12)
+    result = panel.compose_from_form(form, "exercise")
+    assert len(result["commands"]) > 1
+    assert all(not c["report"]["over_limit"] for c in result["commands"])
+    form = dict(FORM, message="TEST MESSAGE " + "X" * 65)
+    result = panel.compose_from_form(form, "exercise")
+    rep = result["commands"][0]["report"]
+    assert rep["over_recommended"] and rep["warning"] == "Recommended LoRa target exceeded."
+
+
+def test_dashboard_shows_exercise_banner_and_composer():
+    server, thread, port = _run_server()
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", "/")
+        resp = conn.getresponse()
+        body = resp.read().decode("utf-8")
+        csp = resp.getheader("Content-Security-Policy")
+        assert "EXERCISE / TEST MODE" in body
+        assert "must begin TEST MESSAGE" in body
+        assert 'action="/traffic/compose"' in body
+        assert "script-src 'nonce-" in csp
+        nonce = csp.split("'nonce-")[1].split("'")[0]
+        assert f'<script nonce="{nonce}">' in body
+
+        conn.request(
+            "POST", "/traffic/compose",
+            body="precedence=P&to=EOC&from=FIELD1&subject=STATUS&message=TEST+MESSAGE+COMMS+OPERATIONAL",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        resp = conn.getresponse()
+        body = resp.read().decode("utf-8")
+        assert resp.status == 200
+        assert "EMCOMM TRAFFIC TEST P 2:EOC 3:FIELD1 4:STATUS 7:TEST MESSAGE COMMS OPERATIONAL" in body
+        assert f"/ {control.MAX_LEN}" in body
+        assert control.load_state()["traffic_count"] == 0  # composing never logs traffic
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_formal_traffic_csv_download(monkeypatch, capsys):
+    send(monkeypatch, capsys, "EMCOMM TRAFFIC P 2:EOC 3:FIELD1 4:STATUS 7:TEST MESSAGE COMMS OPERATIONAL")
+    server, thread, port = _run_server()
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", "/export/formal_traffic.csv")
+        resp = conn.getresponse()
+        data = resp.read().decode("utf-8")
+        assert resp.status == 200
+        assert data.splitlines()[0].startswith("traffic_id,mode,precedence,test_traffic,field_1_incident")
+        assert "EX-001" in data
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)

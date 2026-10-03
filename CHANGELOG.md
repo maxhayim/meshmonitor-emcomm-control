@@ -2,6 +2,35 @@
 
 All notable changes to EmComm Control are documented here.
 
+## [2.6.0] - 2026-10-03
+
+### Added
+- **Optional Net Control automation** (`net_control` config block; every switch off by default; EXERCISE mode only).
+  - **Scheduled announcements:** `before_start`, `at_start`, periodic `during`, `before_end`, `at_end`. Text comes from config and times from the exercise `start`/`end`.
+    - Driven by a MeshMonitor Timed Event running `--schedule-check` every minute, or by `--announcement <key>` per event.
+    - Each item fires once per target (network/Timed Event).
+    - Periodic warnings stop before the end and never stack on explicit items.
+    - Late items beyond `late_grace_minutes` are logged as missed, not sent.
+    - Nothing fires after the end.
+  - **Automatic check-in ACKs** for `SET R | NET CONTROL | <STATION> | CHECKIN | FROM <PLACE>` (alternate order accepted).
+    - Reply format: `SET R | <STATION> | <NET CONTROL IDENTITY> | CHECKIN ACK | RECEIVED HERE IN <PLACE>`.
+    - Active from start until before end (configurable `checkin_ack_window`).
+    - Accepted check-ins join the roster.
+  - **Identity:** name, callsign, or both, plus an optional operator name.
+  - **Location:** exercise-specific override, or Net Control's own check-in location; otherwise none. Coordinates are never transmitted and coordinate-like overrides are rejected.
+  - **Loop and duplicate protection:** exact `CHECKIN` subject, never answer Net Control or `CHECKIN ACK`, packet-ID or hash deduplication persisted across restarts.
+  - **Length rules:** announcements over the limit are refused unless `allow_long_messages` (then sent in parts). ACKs drop the location rather than cut it. Nothing is ever truncated.
+  - **SET-safe:** ACKs use `SET`; announcements containing `TEST` are refused in set-safe style.
+  - **Logging:** `kind: automation` events, a new `automation_log.csv` export, and a summary line.
+  - **Operator panel:** a Net Control Automation section with status, identity, location, next/last transmission, an Upcoming list that drops fired items, activity history, configured messages with character counts, local settings overrides (`automation.json`; the config file is not rewritten), and manual announcements with preview and confirmation (queued for the next schedule check).
+  - `--automation-status` prints status locally (never transmitted).
+  - `docs/net-control.md`.
+- South Dade example config gains a `net_control` block (`KI4SDC`, `DORAL, FLORIDA` override and the 08:00–12:00 announcement schedule). These values exist only in the example.
+
+### Changed
+- Pipe-format lines beginning `SET|TEST <PREC> |` that are not valid check-ins are ignored silently (never answered with HELP), including without the `SET` prefix rule.
+- Switching to LIVE (CLI or panel) drops queued exercise announcements.
+
 ## [2.5.0] - 2026-10-01
 
 ### Added

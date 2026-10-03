@@ -30,11 +30,58 @@ Copy [`south-dade-set-2026.config.json`](south-dade-set-2026.config.json) to the
   "start": "2026-10-03T09:00",
   "end": "2026-10-03T12:00",
   "local_instructions": "NCS ON MESH. CHECK IN FIRST. FORMAL TRAFFIC AFTER INJECT 6.",
-  "exercise_style": "set-safe"
+  "exercise_style": "set-safe",
+  "net_control": {
+    "enabled": true,
+    "name": "NET CONTROL",
+    "operator_name": "",
+    "callsign": "KI4SDC",
+    "location": {
+      "mode": "auto",
+      "override": "DORAL, FLORIDA"
+    },
+    "auto_checkin_ack": true,
+    "checkin_ack_window": "exercise",
+    "announcements": {
+      "enabled": true,
+      "before_start": [
+        {
+          "minutes_before": 60,
+          "message": "WARNING: SET EXERCISE BEGINS IN 1 HOUR. MESHTASTIC + MESHCORE USERS WELCOME."
+        },
+        {
+          "minutes_before": 15,
+          "message": "WARNING: SET EXERCISE BEGINS IN 15 MINUTES. PREPARE FOR EXERCISE TRAFFIC."
+        }
+      ],
+      "at_start": {
+        "message": "WARNING: SET EXERCISE IS NOW IN PROGRESS. SIMULATED TRAFFIC ONLY."
+      },
+      "during": {
+        "interval_minutes": 60,
+        "message": "WARNING: SET EXERCISE IN PROGRESS UNTIL 12PM. SIMULATED TRAFFIC ONLY."
+      },
+      "before_end": [
+        {
+          "minutes_before": 15,
+          "message": "SET EXERCISE ENDS IN 15 MINUTES. FINAL TRAFFIC AND CHECKOUTS MAY BE SENT."
+        }
+      ],
+      "at_end": {
+        "message": "SET EXERCISE COMPLETE. THANK YOU FOR PARTICIPATING."
+      }
+    }
+  }
 }
 ```
 
 This example uses the **SET-safe** exercise style. Bots on the shared local mesh auto-reply to the word `TEST` and cannot be changed for this exercise, so formal traffic is marked `SET R` / `SET P` and Field 7 begins `EXERCISE`. Clubs without that problem can leave `exercise_style` at `standard`.
+
+This example also enables **Net Control automation** (see [docs/net-control.md](../net-control.md)):
+
+- **Identity:** Net Control replies as `NET CONTROL KI4SDC`. Add an `operator_name` (for example `ERIC`) to reply as `ERIC KI4SDC`.
+- **Location:** replies say `RECEIVED HERE IN DORAL, FLORIDA`. Doral is this exercise's override, not an application default.
+- **Check-in ACKs** run only from 09:00 until before 12:00, and only in EXERCISE mode.
 
 Environment variables override the file, for example `MM_EMCOMM_EXERCISE_NAME` or `MM_EMCOMM_ORGANIZATION`. If you run the operator panel, restart it after changing the config.
 
@@ -78,6 +125,41 @@ Before the exercise starts:
 These are **example/local exercise settings**. Use the settings your own exercise plan and local mesh community specify, and follow the radio-service rules that apply to you.
 
 ---
+
+## Net Control automation: example schedule
+
+With one MeshMonitor **Timed Event** per network running `mm_emcomm_control.py --schedule-check` every minute (`* * * * *`, exercise channel), the config above sends:
+
+| Time | Announcement |
+|---|---|
+| 08:00 | WARNING: SET EXERCISE BEGINS IN 1 HOUR. MESHTASTIC + MESHCORE USERS WELCOME. |
+| 08:45 | WARNING: SET EXERCISE BEGINS IN 15 MINUTES. PREPARE FOR EXERCISE TRAFFIC. |
+| 09:00 | WARNING: SET EXERCISE IS NOW IN PROGRESS. SIMULATED TRAFFIC ONLY. |
+| 10:00 | WARNING: SET EXERCISE IN PROGRESS UNTIL 12PM. SIMULATED TRAFFIC ONLY. |
+| 11:00 | WARNING: SET EXERCISE IN PROGRESS UNTIL 12PM. SIMULATED TRAFFIC ONLY. |
+| 11:45 | SET EXERCISE ENDS IN 15 MINUTES. FINAL TRAFFIC AND CHECKOUTS MAY BE SENT. |
+| 12:00 | SET EXERCISE COMPLETE. THANK YOU FOR PARTICIPATING. |
+
+- **No 12:00 periodic warning:** the hourly warning stops before the end.
+- **After 12:00:** no announcements are sent, the panel's Upcoming list is empty, and status is **COMPLETED**.
+- **If you switch to LIVE,** exercise announcements stop immediately.
+
+### Automatic check-ins (09:00–12:00)
+
+The existing `^SET\b` Auto Responder rule delivers these to EmComm Control; replies go back on the same network and channel.
+
+```text
+SET R | NET CONTROL | WRWJ781 | CHECKIN | FROM CORAL SPRINGS, FLORIDA
+→ SET R | WRWJ781 | NET CONTROL KI4SDC | CHECKIN ACK | RECEIVED HERE IN DORAL, FLORIDA
+
+SET R | NET CONTROL | ERIC WRZU598 | CHECKIN | FROM CORAL SPRINGS, FLORIDA
+→ SET R | ERIC WRZU598 | NET CONTROL KI4SDC | CHECKIN ACK | RECEIVED HERE IN DORAL, FLORIDA
+```
+
+- The ACK confirms reception by the Net Control automation only, not delivery or handling of any formal traffic.
+- Duplicates and Net Control's own replies are never acknowledged.
+- Check-ins before 09:00 or from 12:00 on are logged but not answered.
+- `--export` includes everything in `automation_log.csv`.
 
 ## Example timeline
 

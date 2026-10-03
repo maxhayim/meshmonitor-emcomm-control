@@ -86,6 +86,7 @@
       <li>Station, formal traffic, and recent-log tables</li>
       <li>Structured ICS-213 formal traffic composer with character counter</li>
       <li>Delivery status, per-station activity, and optional silent capture of mesh traffic</li>
+      <li>Optional Net Control automation: scheduled exercise announcements and automatic check-in ACKs</li>
       <li>LAN binding requires an access token</li>
     </ul>
     <pre>python3 /data/scripts/mm_emcomm_panel.py --open</pre>

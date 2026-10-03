@@ -19,6 +19,10 @@
     },
     "auto_checkin_ack": true,
     "checkin_ack_window": "exercise",
+    "channels": [
+      "meshtastic:0",
+      "meshcore:0"
+    ],
     "announcements": {
       "enabled": true,
       "before_start": [
@@ -46,6 +50,14 @@
       ],
       "at_end": {
         "message": "SET EXERCISE COMPLETE. THANK YOU FOR PARTICIPATING."
+      },
+      "set_start": {
+        "enabled": true,
+        "message": "SET START | NET OPEN | ALL STATIONS PLEASE USE THE SET MESSAGE TEMPLATE | NET CONTROL ACTIVE"
+      },
+      "set_end": {
+        "enabled": true,
+        "message": "SET COMPLETE | NET CLOSED | THANK YOU TO ALL STATIONS FOR PARTICIPATING | RETURNING CHANNEL TO NORMAL TRAFFIC"
       }
     }
   }

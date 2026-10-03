@@ -37,8 +37,11 @@ Add a `net_control` block to `mm_emcomm_config.json`. The exercise `start` and `
     "at_start":     { "message": "EXERCISE IS NOW IN PROGRESS. SIMULATED TRAFFIC ONLY." },
     "during":       { "interval_minutes": 60, "message": "EXERCISE IN PROGRESS. SIMULATED TRAFFIC ONLY." },
     "before_end":   [ { "minutes_before": 15, "message": "EXERCISE ENDS IN 15 MINUTES." } ],
-    "at_end":       { "message": "EXERCISE COMPLETE. THANK YOU FOR PARTICIPATING." }
-  }
+    "at_end":       { "message": "EXERCISE COMPLETE. THANK YOU FOR PARTICIPATING." },
+    "set_start":    { "enabled": true, "message": "SET START | NET OPEN | ALL STATIONS PLEASE USE THE SET MESSAGE TEMPLATE | NET CONTROL ACTIVE" },
+    "set_end":      { "enabled": true, "message": "SET COMPLETE | NET CLOSED | THANK YOU TO ALL STATIONS FOR PARTICIPATING | RETURNING CHANNEL TO NORMAL TRAFFIC" }
+  },
+  "channels": ["meshtastic:0", "meshcore:0"]
 }
 ```
 
@@ -54,6 +57,8 @@ Add a `net_control` block to `mm_emcomm_config.json`. The exercise `start` and `
 | `late_grace_minutes` | `10` | How late a scheduled announcement may still go out (1–60) |
 | `allow_long_messages` | `false` | Over-limit announcements are **refused** by default; `true` sends them in numbered parts. Never truncated |
 | `announcements.enabled` | `false` | Switch for scheduled announcements |
+| `announcements.set_start` / `set_end` | off | SET start (net open) / SET end (net closed) messages, each with its own `enabled` switch |
+| `channels` | empty (any) | Channels selected for this SET, e.g. `"0"`, `"meshtastic:0"`, `"meshcore:1"`. Announcements and check-in ACKs are only sent on these |
 
 Invalid values are ignored with a warning; nothing is guessed. Warnings are shown in the panel and by `--automation-status`.
 
@@ -142,6 +147,44 @@ Scheduling rules:
 - **`--reset`** does not re-arm announcements that already went out. Fired state is kept in `automation.json`, separate from `state.json`.
 - **Message text is used exactly as configured.**
 
+### SET start and end messages
+
+Two optional messages mark the net opening and closing:
+
+| Message | Sent | Example |
+|---|---|---|
+| `set_start` | once, when the SET begins (`start`) | `SET START \| NET OPEN \| ALL STATIONS PLEASE USE THE SET MESSAGE TEMPLATE \| NET CONTROL ACTIVE` |
+| `set_end` | once, when the SET ends (`end`) | `SET COMPLETE \| NET CLOSED \| THANK YOU TO ALL STATIONS FOR PARTICIPATING \| RETURNING CHANNEL TO NORMAL TRAFFIC` |
+
+Behavior:
+
+- **Independent switches:** each message has its own `enabled` switch, and each can be edited in the panel.
+- **Exact timing:** the start message never goes out before the SET begins, and the end message never goes out before it ends. A scheduler that runs more than `late_grace_minutes` late logs the message as missed instead of sending it late.
+- **No duplicates across restarts:** once sent, the record in `automation.json` prevents a repeat, even if the scheduler or MeshMonitor restarts.
+- **Same-minute order:** when other announcements share the minute, the start message goes first and the end message last.
+- **Logged as system-generated traffic:** each send is an `AUTO ANNOUNCEMENT` (`schedule_event` `set-start` / `set-end`, `system_generated: true`), shown in the panel's activity list and `automation_log.csv`.
+- **Echo safe:** these lines begin with `SET`, so they match the `^SET\b` Auto Responder rule if they come back over the mesh. EmComm Control ignores pipe-format lines that are not commands, so an echo is never answered.
+
+### SET channels
+
+`channels` limits Net Control automation to the channels selected for the SET:
+
+- **Entry format:** bare numbers match on either network; `meshtastic:N` or `meshcore:N` match one network only.
+- **No selection means no restriction.**
+- **What the script can and can't do:** MeshMonitor decides where output goes, either the Timed Event's channel or the channel the check-in arrived on. On any other channel, EmComm Control stays silent and logs the reason.
+- **Meshtastic Timed Events** don't tell the script their channel, so add `--channel N` to their arguments, for example `--schedule-check --channel 0`. MeshCore Timed Events pass the channel automatically.
+- **Direct-message check-ins** to Net Control are still acknowledged, by DM.
+
+### After the SET ends
+
+Once the SET has ended, its SET-specific automation closes:
+
+- no further announcements or check-in ACKs
+- the panel shows the start/end messages and channels read-only, and hides manual sends
+- edits to them are refused
+
+Identity settings stay editable. Configure a new SET by changing `start`/`end` in the config file.
+
 ### MeshMonitor setup
 
 **1. Schedule check (Timed Event)**, one per network/channel that should carry announcements:
@@ -150,7 +193,7 @@ Scheduling rules:
 |---|---|
 | Schedule (cron) | `* * * * *` (every minute) |
 | Script | `/data/scripts/mm_emcomm_control.py` |
-| Arguments | `--schedule-check` |
+| Arguments | `--schedule-check` (Meshtastic with SET channels: `--schedule-check --channel 0`) |
 | Channel | The exercise channel |
 
 The script prints nothing unless an announcement is due, so MeshMonitor sends nothing in between. Optional `--target NAME` labels the target in logs; by default the target is derived from MeshMonitor's `TIMER_ID` and source.

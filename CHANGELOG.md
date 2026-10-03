@@ -2,6 +2,30 @@
 
 All notable changes to EmComm Control are documented here.
 
+## [2.7.0] - 2026-10-03
+
+### Added
+- **SET start and end messages** (`net_control.announcements.set_start` / `set_end`).
+  - Net-open and net-closed messages, sent once exactly when the SET begins and ends.
+  - Each has its own `enabled` switch and is editable in the panel, with length and SET-safe validation.
+  - Start goes first at its minute; end goes last at its minute.
+  - The sent-state in `automation.json` prevents duplicates after scheduler or application restarts.
+- **SET channel selection** (`net_control.channels`, e.g. `["meshtastic:0", "meshcore:0"]`, also editable in the panel).
+  - Announcements and check-in ACKs are sent only on the selected channels.
+  - On other channels EmComm Control stays silent and logs why.
+  - New `--channel N` argument for Meshtastic Timed Events, which do not pass `CHANNEL`.
+- Automatic messages are logged with `system_generated: true`. `automation_log.csv` gains a final `system_generated` column.
+- The South Dade example config enables both messages and selects `meshtastic:0` / `meshcore:0`.
+
+### Changed
+- After a SET ends:
+  - its start/end messages, channel selection and manual announcements are closed in the panel (read-only)
+  - edits to them are refused
+  - identity settings stay editable
+
+### Fixed
+- `SET`-prefixed pipe-format lines that are not commands (e.g. an echo of `SET START | NET OPEN | …`) are ignored instead of answered with HELP, which could loop on a shared channel.
+
 ## [2.6.0] - 2026-10-03
 
 ### Added

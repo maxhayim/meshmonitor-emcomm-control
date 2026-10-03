@@ -43,6 +43,7 @@ EmComm Control allows operators to:
 - Log formal traffic structurally with internal traffic IDs, replies (`RE:`), relays, and multipart reassembly
 - Track each formal message from logged → relayed → **delivered** (`EMCOMM RCVD`) and query status over the mesh (`EMCOMM TRACK`)
 - Optionally capture ordinary mesh traffic silently, with SNR, hops, and channel, for after-action review
+- Optionally automate exercise **Net Control**: scheduled pre-start / start / periodic / pre-end / end announcements and automatic ACKs for compact `SET R | NET CONTROL | <STATION> | CHECKIN | FROM <PLACE>` check-ins (EXERCISE mode only)
 - Summarize activity per station: check-ins, SITREPs, traffic, relays, receipts, captured messages, and signal/hop coverage
 - Request current operational statistics
 - Send operator-supplied announcements
@@ -212,6 +213,7 @@ Check the current mode:
 │   ├── index.js
 │   ├── formal-traffic.md   # ICS-213 / NTS-style formal traffic reference
 │   ├── tracking.md         # Delivery receipts, TRACK, capture, station activity
+│   ├── net-control.md      # Net Control automation (announcements, check-in ACKs)
 │   └── examples/           # Example exercise configurations (not defaults)
 ├── tests/                  # pytest suite
 ├── ISSUE_TEMPLATE/
@@ -428,6 +430,29 @@ Other options:
 
 ---
 
+## Net Control automation (optional)
+
+Disabled unless a `net_control` block in `mm_emcomm_config.json` enables it. It runs **only in EXERCISE mode**; switching to LIVE stops it immediately. Full reference: [docs/net-control.md](docs/net-control.md).
+
+- **Scheduled announcements:** before start, at start, periodic during the exercise, before end, and at end. Text comes from config and times come from the exercise `start`/`end`. Each fires once per network; fired items leave the panel's Upcoming list; nothing remains after the end. History is kept in the log and in `automation_log.csv`.
+- **Automatic check-in ACK:**
+
+  ```text
+  SET R | NET CONTROL | WRWJ781 | CHECKIN | FROM CORAL SPRINGS, FLORIDA
+  → SET R | WRWJ781 | NET CONTROL KI4XYZ | CHECKIN ACK | RECEIVED HERE IN <PLACE>
+  ```
+
+  - The identity can be a name, a callsign, or both, plus an optional operator name.
+  - The location is an exercise-specific override, or Net Control's own check-in location. If neither is known, the reply just says `RECEIVED`.
+  - **Exact GPS coordinates are never transmitted.**
+  - The ACK confirms reception only.
+- **Safety:** exact `CHECKIN` subject match only, never replies to `CHECKIN ACK` or to Net Control itself, duplicate suppression (packet ID or short-lived hash), and SET-safe wording.
+
+MeshMonitor setup:
+
+- **Timed Event:** `--schedule-check`, cron `* * * * *`, exercise channel; one per network.
+- **Check-ins:** the existing `^SET\b` Auto Responder rule covers SET-safe check-ins.
+
 ## Local administration
 
 ### Send an operator-supplied announcement
@@ -575,6 +600,7 @@ This project follows semantic versioning in the same style as `meshmonitor-radio
 - **v2.1.0** — adds the optional browser Operator Control Panel for one-click LIVE / EXERCISE switching and operational status
 - **v2.2.0** — adds roster checkout, traffic precedence, and after-action CSV export (CLI and panel)
 - **v2.3.0** — compressed ICS-213 / NTS-style formal traffic, TEST validation, replies, relays, multipart, 133-character default limit, generic exercise configuration
+- **v2.6.0** — optional Net Control automation: scheduled exercise announcements and automatic SET check-in ACKs
 - **v2.5.0** — configurable exercise marking: `set-safe` style (`SET R` + `EXERCISE`) for shared networks with TEST-triggered bots
 - **v2.4.0** — message tracking: delivery receipts (`RCVD`), status queries (`TRACK`), optional silent capture of mesh traffic, receive metadata (SNR/hops/channel), per-station activity summary
 

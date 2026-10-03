@@ -3,7 +3,7 @@
 #   name: EmComm Control
 #   emoji: 🚨
 #   language: Python
-__version__ = "2.5.0"
+__version__ = "2.6.0"
 
 """
 EmComm Control for MeshMonitor.
@@ -50,12 +50,13 @@ Safety:
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import re
 import shutil
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -167,6 +168,9 @@ def load_config(path=None):
                 for key in DEFAULT_CONFIG:
                     if data.get(key) is not None:
                         cfg[key] = str(data[key]).strip()
+                # Optional structured block, validated when used (see net_control_config()).
+                if "net_control" in data:
+                    cfg["net_control"] = data["net_control"]
         except Exception:
             pass
     for key, names in CONFIG_ENV.items():
@@ -1277,7 +1281,7 @@ def handle_capture():
     if not message:
         return
     prefix, _ = strip_prefix(message)
-    if prefix:
+    if prefix or CHECKIN_LINE_RE.match(message):
         if not is_meshcore():
             handle_message()
         return
@@ -1314,6 +1318,802 @@ def handle_status(state):
     )
 
 
+# ---------------------------------------------------------------------------
+# Net Control automation (optional; EXERCISE mode only)
+#
+# Driven entirely by MeshMonitor: an Auto Responder rule delivers compact
+# check-ins ('SET R | NET CONTROL | <STATION> | CHECKIN | FROM <PLACE>') and a
+# Timed Event runs '--schedule-check' every minute to send configured
+# announcements. Nothing here transmits directly; output goes through the
+# normal JSON response mechanism, and refusals are logged, never transmitted.
+# ---------------------------------------------------------------------------
+
+NET_CONTROL_DEFAULT_NAME = "NET CONTROL"
+LOCATION_MODES = ("auto", "override", "none")
+CHECKIN_ACK_WINDOWS = ("exercise", "always")
+IDENTITY_RE = re.compile(r"^[A-Z0-9][A-Z0-9 ./'-]*$")
+CHECKIN_LINE_RE = re.compile(r"^(SET|TEST)\s+(R|P|W|EMERGENCY|ROUTINE|PRIORITY|WELFARE)\s*\|", re.I)
+MANUAL_QUEUE_MINUTES = 10
+
+AUTO_CHECKIN_ACK = "AUTO CHECKIN ACK"
+AUTO_ACK_SKIPPED = "AUTO ACK SKIPPED"
+AUTO_ACK_BLOCKED_WINDOW = "AUTO ACK BLOCKED OUTSIDE WINDOW"
+AUTO_ACK_BLOCKED_LIVE = "AUTO ACK BLOCKED LIVE MODE"
+AUTO_DUPLICATE = "AUTO DUPLICATE SUPPRESSED"
+AUTO_ANNOUNCEMENT = "AUTO ANNOUNCEMENT"
+AUTO_ANNOUNCEMENT_SKIPPED = "AUTO ANNOUNCEMENT SKIPPED"
+AUTO_SCHEDULE_COMPLETED = "AUTO SCHEDULE COMPLETED"
+AUTO_SETTINGS_CHANGED = "AUTO SETTINGS CHANGED"
+
+
+def parse_net_control(raw, max_len=None):
+    """Validate the optional 'net_control' config block.
+
+    Returns (config, warnings). config is None when the block is absent or
+    unusable. Invalid entries are dropped with a warning rather than guessed at.
+    Every switch defaults to off, so automation only runs when explicitly enabled.
+    """
+    if raw is None:
+        return None, []
+    if not isinstance(raw, dict):
+        return None, ["net_control must be a JSON object; Net Control automation is off."]
+    warnings = []
+    hard = max_len or MAX_LEN
+
+    def flag(src, key, default, path):
+        value = src.get(key, default)
+        if isinstance(value, bool):
+            return value
+        warnings.append(f"{path}.{key} must be true or false; using {str(default).lower()}.")
+        return default
+
+    def number(src, key, default, path, low, high):
+        value = src.get(key, default)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
+            warnings.append(f"{path}.{key} must be a number from {low} to {high}; using {default}.")
+            return default
+        return int(value)
+
+    def label(src, key, path, limit=40):
+        value = src.get(key, "")
+        if value is None:
+            return ""
+        if not isinstance(value, str):
+            warnings.append(f"{path}.{key} must be text; ignored.")
+            return ""
+        error = identity_error(value, limit)
+        if error:
+            warnings.append(f"{path}.{key} {error}; ignored.")
+            return ""
+        return normalize(value).upper()
+
+    def message(src, path):
+        value = src.get("message")
+        if not isinstance(value, str) or not normalize(value):
+            warnings.append(f"{path}.message must be non-empty text; item ignored.")
+            return None
+        return normalize(value)
+
+    location_raw = raw.get("location") or {}
+    if not isinstance(location_raw, dict):
+        warnings.append("net_control.location must be an object; using automatic location.")
+        location_raw = {}
+    mode = str(location_raw.get("mode") or "auto").strip().lower()
+    if mode not in LOCATION_MODES:
+        warnings.append(f"net_control.location.mode must be one of {', '.join(LOCATION_MODES)}; using auto.")
+        mode = "auto"
+    override = ""
+    if location_raw.get("override"):
+        error = location_error(location_raw.get("override"))
+        if error:
+            warnings.append(f"net_control.location.override {error}; ignored.")
+        else:
+            override = normalize(location_raw["override"]).upper()
+    if mode == "override" and not override:
+        warnings.append("net_control.location.mode is 'override' but no override is set; no location will be sent.")
+
+    window = str(raw.get("checkin_ack_window") or "exercise").strip().lower()
+    if window not in CHECKIN_ACK_WINDOWS:
+        warnings.append(f"net_control.checkin_ack_window must be one of {', '.join(CHECKIN_ACK_WINDOWS)}; using exercise.")
+        window = "exercise"
+
+    nc = {
+        "enabled": flag(raw, "enabled", False, "net_control"),
+        "name": label(raw, "name", "net_control"),
+        "operator_name": label(raw, "operator_name", "net_control"),
+        "callsign": label(raw, "callsign", "net_control", limit=16),
+        "location": {"mode": mode, "override": override},
+        "auto_checkin_ack": flag(raw, "auto_checkin_ack", False, "net_control"),
+        "checkin_ack_window": window,
+        "dedup_window_minutes": number(raw, "dedup_window_minutes", 3, "net_control", 1, 120),
+        "late_grace_minutes": number(raw, "late_grace_minutes", 10, "net_control", 1, 60),
+        "allow_long_messages": flag(raw, "allow_long_messages", False, "net_control"),
+        "announcements": {"enabled": False, "before_start": [], "at_start": None, "during": None,
+                          "before_end": [], "at_end": None},
+    }
+
+    ann_raw = raw.get("announcements") or {}
+    if not isinstance(ann_raw, dict):
+        warnings.append("net_control.announcements must be an object; no announcements configured.")
+        ann_raw = {}
+    ann = nc["announcements"]
+    ann["enabled"] = flag(ann_raw, "enabled", False, "net_control.announcements")
+    for group in ("before_start", "before_end"):
+        items = ann_raw.get(group) or []
+        if not isinstance(items, list):
+            warnings.append(f"net_control.announcements.{group} must be a list; ignored.")
+            items = []
+        seen = set()
+        for i, item in enumerate(items):
+            path = f"net_control.announcements.{group}[{i}]"
+            if not isinstance(item, dict):
+                warnings.append(f"{path} must be an object; ignored.")
+                continue
+            minutes = item.get("minutes_before")
+            if isinstance(minutes, bool) or not isinstance(minutes, (int, float)) or not 1 <= minutes <= 1440:
+                warnings.append(f"{path}.minutes_before must be a number from 1 to 1440; item ignored.")
+                continue
+            text = message(item, path)
+            if text is None:
+                continue
+            if int(minutes) in seen:
+                warnings.append(f"{path} repeats minutes_before={int(minutes)}; duplicate ignored.")
+                continue
+            seen.add(int(minutes))
+            ann[group].append({"minutes_before": int(minutes), "message": text})
+        ann[group].sort(key=lambda x: -x["minutes_before"])
+    for group in ("at_start", "at_end"):
+        item = ann_raw.get(group)
+        if item is None:
+            continue
+        if not isinstance(item, dict):
+            warnings.append(f"net_control.announcements.{group} must be an object; ignored.")
+            continue
+        text = message(item, f"net_control.announcements.{group}")
+        if text is not None:
+            ann[group] = {"message": text}
+    during = ann_raw.get("during")
+    if during is not None:
+        if not isinstance(during, dict):
+            warnings.append("net_control.announcements.during must be an object; ignored.")
+        else:
+            interval = during.get("interval_minutes")
+            if isinstance(interval, bool) or not isinstance(interval, (int, float)) or not 5 <= interval <= 1440:
+                warnings.append("net_control.announcements.during.interval_minutes must be a number from 5 to 1440; ignored.")
+            else:
+                text = message(during, "net_control.announcements.during")
+                if text is not None:
+                    ann["during"] = {"interval_minutes": int(interval), "message": text}
+
+    for item in announcement_texts(nc):
+        if len(item) > hard and not nc["allow_long_messages"]:
+            warnings.append(
+                f"Announcement exceeds the {hard}-character limit and will not be sent "
+                f"(set allow_long_messages to send it in parts): {item[:40]}..."
+            )
+    return nc, warnings
+
+
+def announcement_texts(nc):
+    ann = nc["announcements"]
+    texts = [i["message"] for i in ann["before_start"] + ann["before_end"]]
+    texts += [ann[k]["message"] for k in ("at_start", "during", "at_end") if ann[k]]
+    return texts
+
+
+def identity_error(value, limit=40):
+    text = normalize(value).upper()
+    if not text:
+        return ""
+    if "|" in text:
+        return "may not contain '|'"
+    if len(text) > limit:
+        return f"must be {limit} characters or fewer"
+    if not IDENTITY_RE.match(text):
+        return "may contain only letters, digits, spaces and . / ' -"
+    return ""
+
+
+def location_error(value):
+    if not isinstance(value, str):
+        return "must be text"
+    text = normalize(value)
+    if "|" in text:
+        return "may not contain '|'"
+    if len(text) > 60:
+        return "must be 60 characters or fewer"
+    if re.search(r"-?\d{1,3}\.\d{3,}", text):
+        return "looks like GPS coordinates; use a place name (exact coordinates are never sent automatically)"
+    return ""
+
+
+# ---- automation state (separate file so --reset never re-arms fired announcements)
+
+def automation_file():
+    return DATA_DIR / "automation.json"
+
+
+def default_automation():
+    return {"overrides": {}, "fired": {}, "completed": {}, "dedup": {}, "manual_queue": [],
+            "targets": {}, "last_transmission": None, "node_position_seen": None}
+
+
+def load_automation():
+    path = automation_file()
+    data = default_automation()
+    if path.exists():
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                for key, value in loaded.items():
+                    if key in data and isinstance(value, type(data[key]) if data[key] is not None else (dict, type(None))):
+                        data[key] = value
+        except Exception:
+            pass
+    return data
+
+
+def save_automation(data):
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = automation_file().with_suffix(".tmp")
+    with tmp.open("w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    tmp.replace(automation_file())
+
+
+OVERRIDE_KEYS = ("enabled", "auto_checkin_ack", "announcements_enabled",
+                 "name", "operator_name", "callsign", "location_override")
+
+
+def net_control_config(cfg=None, automation=None):
+    """Effective Net Control config: validated file config plus local panel overrides.
+
+    Returns (config or None, warnings). Overrides come only from the local
+    operator panel; inbound mesh messages can never change them.
+    """
+    cfg = cfg or CONFIG
+    nc, warnings = parse_net_control(cfg.get("net_control"))
+    if nc is None:
+        return None, warnings
+    overrides = (automation or load_automation()).get("overrides") or {}
+    for key in ("enabled", "auto_checkin_ack"):
+        if isinstance(overrides.get(key), bool):
+            nc[key] = overrides[key]
+    if isinstance(overrides.get("announcements_enabled"), bool):
+        nc["announcements"]["enabled"] = overrides["announcements_enabled"]
+    for key in ("name", "operator_name", "callsign"):
+        if isinstance(overrides.get(key), str) and not identity_error(overrides[key], 16 if key == "callsign" else 40):
+            nc[key] = normalize(overrides[key]).upper()
+    if isinstance(overrides.get("location_override"), str) and not location_error(overrides["location_override"]):
+        nc["location"]["override"] = normalize(overrides["location_override"]).upper()
+    return nc, warnings
+
+
+def net_control_identity(nc):
+    """Display identity: operator+callsign, name+callsign, callsign, name, operator, NET CONTROL."""
+    op, name, call = nc.get("operator_name", ""), nc.get("name", ""), nc.get("callsign", "")
+    if op and call:
+        return f"{op} {call}"
+    if name and call:
+        return f"{name} {call}"
+    return call or name or op or NET_CONTROL_DEFAULT_NAME
+
+
+def net_control_aliases(nc):
+    aliases = {NET_CONTROL_DEFAULT_NAME, "NCS", net_control_identity(nc)}
+    for key in ("name", "callsign"):
+        if nc.get(key):
+            aliases.add(nc[key])
+    if nc.get("name") and nc.get("callsign"):
+        aliases.add(f"{nc['name']} {nc['callsign']}")
+    return aliases
+
+
+def is_net_control_sender(participant, nc):
+    """Loop guard: never acknowledge Net Control itself (or this automation's own output)."""
+    who = normalize(participant).upper()
+    if NET_CONTROL_DEFAULT_NAME in who or who in net_control_aliases(nc):
+        return True
+    return bool(nc.get("callsign")) and nc["callsign"] in who.split()
+
+
+def resolve_location(nc, state=None):
+    """Return (location, source). Never invents a location and never returns coordinates.
+
+    Order: exercise-specific override, then (auto mode) the location Net Control's
+    own callsign checked in with, otherwise none. MeshMonitor exposes only node
+    coordinates, and there is no reverse-geocoding facility, so coordinates are
+    never turned into, or sent as, a location.
+    """
+    loc = nc.get("location") or {}
+    if loc.get("mode") == "none":
+        return "", "none"
+    if loc.get("override"):
+        return loc["override"], "override"
+    if loc.get("mode") == "auto" and nc.get("callsign"):
+        info = ((state or load_state()).get("participants") or {}).get(nc["callsign"]) or {}
+        place = normalize(info.get("location", "")).replace("-", " ")
+        if place and not location_error(place):
+            return place.upper(), "roster"
+    return "", "none"
+
+
+def detected_location_text(nc, automation, state=None):
+    place, source = resolve_location(dict(nc, location=dict(nc["location"], override="")), state)
+    if place:
+        return f"{place} (from Net Control check-in)"
+    if automation.get("node_position_seen"):
+        return "Node coordinates available, no place name (not transmitted)"
+    return "None detected"
+
+
+# ---- check-in recognition
+
+def parse_checkin_line(text, nc):
+    """Recognize a compact check-in addressed to Net Control. Returns a dict or None.
+
+    Preferred:  SET R | NET CONTROL | <STATION> | CHECKIN | FROM <PLACE>
+    Alternate:  SET R | <STATION> | NET CONTROL | CHECKIN | FROM <PLACE>
+    The subject must be exactly CHECKIN (so 'CHECKIN ACK' never matches), and
+    one of the two address fields must name Net Control.
+    """
+    text = normalize(text)
+    if not CHECKIN_LINE_RE.match(text):
+        return None
+    parts = [normalize(p) for p in text.split("|")]
+    if len(parts) < 4 or normalize(parts[3]).upper() != "CHECKIN":
+        return None
+    header = parts[0].upper().split()
+    aliases = net_control_aliases(nc)
+    first, second = parts[1].upper(), parts[2].upper()
+    if first in aliases:
+        # Preferred layout. If the sender also looks like Net Control, the
+        # loop guard in handle_net_checkin rejects and logs it.
+        participant, layout = second, "preferred"
+    elif second in aliases:
+        participant, layout = first, "alternate"
+    else:
+        return None
+    if identity_error(participant) or not participant:
+        return None
+    body = " | ".join(parts[4:]).strip()
+    reported = re.sub(r"^FROM\s+", "", body, flags=re.I).upper() if body.upper().startswith("FROM ") else ""
+    return {
+        "participant": participant,
+        "precedence": PRECEDENCE_TOKENS[header[1]],
+        "marker": header[0],
+        "layout": layout,
+        "message": body,
+        "reported_location": reported,
+    }
+
+
+def automation_target():
+    """Identify the MeshMonitor source/Timed Event running this script, for per-target bookkeeping."""
+    network = "meshcore" if is_meshcore() else ("meshtastic" if os.getenv("TIMER_ID") or os.getenv("MESSAGE") is not None else "local")
+    source = os.getenv("MESHCORE_SOURCE_ID", "")
+    timer = os.getenv("TIMER_ID", "")
+    channel = os.getenv("CHANNEL", "")
+    parts = [network] + [p for p in (source, f"timer {timer}" if timer else "", f"ch {channel}" if channel else "") if p]
+    return ":".join(parts)
+
+
+def dedup_key(text):
+    """Packet ID when MeshMonitor supplies one; otherwise network+channel+sender+text."""
+    network = "meshcore" if is_meshcore() else "meshtastic"
+    packet = normalize(os.getenv("PACKET_ID", ""))
+    if packet and packet not in {"undefined", "null", "0"}:
+        return f"pkt:{network}:{os.getenv('MESHCORE_SOURCE_ID', '')}:{packet}"
+    raw = "|".join([network, os.getenv("MESHCORE_SOURCE_ID", ""), os.getenv("CHANNEL", ""),
+                    sender_id(), normalize(text).upper()])
+    return "txt:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
+
+
+def _parse_time(value):
+    try:
+        moment = datetime.fromisoformat(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=LOCAL_TZ)
+
+
+def exercise_window(cfg=None):
+    """(start, end) from the exercise config, or (None, None) if absent/invalid."""
+    cfg = cfg or CONFIG
+    start, end = _parse_time(cfg.get("start")), _parse_time(cfg.get("end"))
+    if not start or not end or end <= start:
+        return None, None
+    return start, end
+
+
+def log_automation(event, extra=None):
+    record = {"event": event, "target": automation_target()}
+    record.update(extra or {})
+    log_event("automation", sender_id() if os.getenv("MESSAGE") is not None else "automation",
+              record.get("outgoing") or record.get("incoming") or record.get("reason", ""), record)
+
+
+def handle_net_checkin(message, state, now=None):
+    """Auto-acknowledge a compact SET check-in. Returns the ACK text, or None (silent)."""
+    automation = load_automation()
+    nc, _ = net_control_config(automation=automation)
+    if nc is None:
+        return None
+    parsed = parse_checkin_line(message, nc)
+    if not parsed:
+        return None
+    now = now or datetime.now(LOCAL_TZ)
+    base = {"participant": parsed["participant"], "incoming": message, "network": rx_metadata().get("network", ""),
+            "channel": os.getenv("CHANNEL", ""), "checkin_layout": parsed["layout"]}
+    if is_net_control_sender(parsed["participant"], nc):
+        log_automation(AUTO_ACK_SKIPPED, dict(base, reason="sender is Net Control (loop prevention)"))
+        return None
+    if not nc["enabled"]:
+        log_automation(AUTO_ACK_SKIPPED, dict(base, reason="Net Control automation disabled"))
+        return None
+    if not is_exercise(state):
+        log_automation(AUTO_ACK_BLOCKED_LIVE, dict(base, reason="LIVE mode: exercise check-ins are not acknowledged"))
+        return None
+    start, end = exercise_window()
+    if nc["checkin_ack_window"] == "exercise" and start and not start <= now < end:
+        reason = "before exercise start" if now < start else "after exercise end"
+        log_automation(AUTO_ACK_BLOCKED_WINDOW, dict(base, reason=reason))
+        return None
+
+    key = dedup_key(message)
+    cutoff = now - timedelta(minutes=nc["dedup_window_minutes"])
+    recent = {k: v for k, v in automation["dedup"].items() if (_parse_time(v) or now) >= cutoff}
+    if key in recent:
+        automation["dedup"] = recent
+        save_automation(automation)
+        log_automation(AUTO_DUPLICATE, dict(base, reason=f"same check-in already processed at {_hhmm(recent[key])}"))
+        return None
+    recent[key] = now.isoformat(timespec="seconds")
+    automation["dedup"] = recent
+
+    participant = parsed["participant"]
+    state["participants"][participant] = {
+        "node": sender_id(), "location": parsed["reported_location"], "power": "",
+        "role": "PARTICIPANT", "time": now_iso(), "source": "net_control_checkin",
+    }
+    state["events"] += 1
+    save_state(state)
+    log_event("checkin", sender_id(), message, {
+        "callsign": participant, "location": parsed["reported_location"], "source": "net_control_checkin",
+    })
+    if not nc["auto_checkin_ack"]:
+        save_automation(automation)
+        log_automation(AUTO_ACK_SKIPPED, dict(base, reason="auto check-in ACK disabled (check-in logged)"))
+        return None
+
+    place, source = resolve_location(nc, state)
+    ack, note = build_checkin_ack(parsed, nc, place)
+    if ack is None:
+        save_automation(automation)
+        log_automation(AUTO_ACK_SKIPPED, dict(base, reason=note, location_source=source, effective_location=place))
+        return None
+    automation["last_transmission"] = {"time": now.isoformat(timespec="seconds"), "text": ack, "event": AUTO_CHECKIN_ACK}
+    save_automation(automation)
+    log_automation(AUTO_CHECKIN_ACK, dict(base, outgoing=ack, location_source=source if place and not note else "none",
+                                          effective_location=place if not note else "", reason=note))
+    return ack
+
+
+def build_checkin_ack(parsed, nc, place, limit=None):
+    """Build the ACK; drop the location (never truncate it) if it would exceed the limit."""
+    limit = limit or MAX_LEN
+    marker = exercise_style()["precedence_marker"]
+    head = f"{marker} {parsed['precedence']} | {parsed['participant']} | {net_control_identity(nc)} | CHECKIN ACK | RECEIVED"
+    if place:
+        full = f"{head} HERE IN {place}"
+        if len(full) <= limit:
+            return full, ""
+        if len(head) <= limit:
+            return head, f"location omitted: ACK would be {len(full)} characters (limit {limit})"
+    if len(head) <= limit:
+        return head, ""
+    return None, f"ACK would be {len(head)} characters (limit {limit}); not sent"
+
+
+# ---- scheduled announcements
+
+def _duration(minutes):
+    if minutes % 60 == 0:
+        hours = minutes // 60
+        return f"{hours} hour" + ("s" if hours != 1 else "")
+    return f"{minutes} minutes"
+
+
+def build_schedule(nc, cfg=None):
+    """Concrete announcement list for the configured exercise window. Returns (items, warnings)."""
+    start, end = exercise_window(cfg)
+    ann = nc["announcements"] if nc else None
+    if not nc or not any([ann["before_start"], ann["at_start"], ann["during"], ann["before_end"], ann["at_end"]]):
+        return [], []
+    if not start:
+        return [], ["Announcements need valid exercise 'start' and 'end' times (end after start)."]
+    warnings, items = [], []
+    for entry in ann["before_start"]:
+        items.append({"key": f"prestart-{entry['minutes_before']}", "kind": "before_start",
+                      "label": f"Begins in {_duration(entry['minutes_before'])}",
+                      "time": start - timedelta(minutes=entry["minutes_before"]), "message": entry["message"]})
+    if ann["at_start"]:
+        items.append({"key": "start", "kind": "at_start", "label": "Exercise begins", "time": start,
+                      "message": ann["at_start"]["message"]})
+    for entry in ann["before_end"]:
+        moment = end - timedelta(minutes=entry["minutes_before"])
+        if moment <= start:
+            warnings.append(f"before_end {entry['minutes_before']} minutes falls at or before the start; ignored.")
+            continue
+        items.append({"key": f"preend-{entry['minutes_before']}", "kind": "before_end",
+                      "label": f"Exercise ends in {_duration(entry['minutes_before'])}", "time": moment,
+                      "message": entry["message"]})
+    if ann["at_end"]:
+        items.append({"key": "end", "kind": "at_end", "label": "Exercise complete", "time": end,
+                      "message": ann["at_end"]["message"]})
+    if ann["during"]:
+        explicit = {i["time"] for i in items}
+        interval = ann["during"]["interval_minutes"]
+        offset = interval
+        while start + timedelta(minutes=offset) < end:
+            moment = start + timedelta(minutes=offset)
+            if moment not in explicit:  # never stack a periodic warning on an explicit announcement
+                items.append({"key": f"during-{offset}", "kind": "during", "label": "Exercise in progress",
+                              "time": moment, "message": ann["during"]["message"]})
+            offset += interval
+    items.sort(key=lambda i: (i["time"], i["key"]))
+    return items, warnings
+
+
+def schedule_id(cfg=None):
+    start, end = exercise_window(cfg)
+    return f"{start.isoformat()}|{end.isoformat()}" if start else "none"
+
+
+def handled_keys(automation, cfg=None):
+    keys = set()
+    for fired in (automation["fired"].get(schedule_id(cfg)) or {}).values():
+        keys.update(fired)
+    return keys
+
+
+def schedule_overview(now=None, cfg=None, automation=None, state=None):
+    """Status, upcoming items and recent history for the panel and --automation-status."""
+    now = now or datetime.now(LOCAL_TZ)
+    automation = automation or load_automation()
+    state = state or load_state()
+    nc, warnings = net_control_config(cfg, automation)
+    if nc is None:
+        return {"configured": False, "status": "NOT CONFIGURED", "upcoming": [], "items": [], "warnings": warnings}
+    items, schedule_warnings = build_schedule(nc, cfg)
+    handled = handled_keys(automation, cfg)
+    grace = timedelta(minutes=nc["late_grace_minutes"])
+    upcoming = [i for i in items if i["key"] not in handled and now < i["time"] + grace]
+    start, end = exercise_window(cfg)
+    if not items:
+        status = "NO SCHEDULE"
+    elif not nc["enabled"] or not nc["announcements"]["enabled"]:
+        status = "DISABLED"
+    elif not is_exercise(state):
+        status = "PAUSED (LIVE MODE)"
+    elif not upcoming and end and now >= end:
+        status = "COMPLETED"
+    elif start and now >= start:
+        status = "ACTIVE"
+    else:
+        status = "SCHEDULED"
+    if end and now >= end + grace:
+        upcoming = []
+        if status in {"ACTIVE", "SCHEDULED"}:
+            status = "COMPLETED"
+    return {"configured": True, "config": nc, "status": status, "items": items, "upcoming": upcoming,
+            "handled": handled, "warnings": warnings + schedule_warnings, "start": start, "end": end}
+
+
+def announcement_problem(text, nc):
+    """Why a configured announcement cannot be sent as-is, or ''."""
+    if len(text) > MAX_LEN and not nc["allow_long_messages"]:
+        return f"message is {len(text)} characters; limit is {MAX_LEN} (not truncated)"
+    if exercise_style()["name"] == "set-safe" and re.search(r"\btest\b", text, re.I):
+        return "message contains TEST while exercise_style is set-safe"
+    return ""
+
+
+def _mark(automation, target, key, status, now, reason=""):
+    fired = automation["fired"].setdefault(schedule_id(), {}).setdefault(target, {})
+    fired[key] = {"status": status, "time": now.isoformat(timespec="seconds"), "reason": reason}
+
+
+def run_schedule_check(now=None, target=None):
+    """Return announcements due now for this target. Silent (empty) when nothing is due."""
+    now = now or datetime.now(LOCAL_TZ)
+    target = target or automation_target()
+    automation = load_automation()
+    state = load_state()
+    automation["targets"][target] = now.isoformat(timespec="seconds")
+    if os.getenv("MM_LAT") and os.getenv("MM_LON"):
+        automation["node_position_seen"] = now.isoformat(timespec="seconds")
+    nc, _ = net_control_config(automation=automation)
+    messages = []
+    if nc is None:
+        save_automation(automation)
+        return messages
+    exercise = is_exercise(state)
+
+    # Operator-queued manual announcements (from the local panel).
+    queue = []
+    for item in automation["manual_queue"]:
+        queued = _parse_time(item.get("queued_at")) or now
+        if now >= queued + timedelta(minutes=MANUAL_QUEUE_MINUTES):
+            continue  # expired; dropped from the queue
+        if target in item.get("sent_targets", []):
+            queue.append(item)
+            continue
+        problem = "LIVE mode" if not exercise else ("Net Control automation disabled" if not nc["enabled"]
+                                                     else announcement_problem(item["message"], nc))
+        if problem:
+            log_automation(AUTO_ANNOUNCEMENT_SKIPPED, {"schedule_event": item["key"], "source": "panel",
+                                                      "reason": problem, "outgoing": ""})
+        else:
+            messages.append(item["message"])
+            log_automation(AUTO_ANNOUNCEMENT, {"schedule_event": item["key"], "source": "panel", "outgoing": item["message"]})
+            automation["last_transmission"] = {"time": now.isoformat(timespec="seconds"), "text": item["message"],
+                                               "event": item["key"]}
+        item.setdefault("sent_targets", []).append(target)
+        queue.append(item)
+    automation["manual_queue"] = queue
+
+    items, _ = build_schedule(nc)
+    sid = schedule_id()
+    fired = (automation["fired"].get(sid) or {}).get(target, {})
+    grace = timedelta(minutes=nc["late_grace_minutes"])
+    for item in items:
+        if item["key"] in fired or now < item["time"]:
+            continue
+        if now >= item["time"] + grace:
+            reason = f"missed: no schedule check within {nc['late_grace_minutes']} minutes of {_hhmm(item['time'].isoformat())}"
+            _mark(automation, target, item["key"], "missed", now, reason)
+            log_automation(AUTO_ANNOUNCEMENT_SKIPPED, {"schedule_event": item["key"], "reason": reason})
+            continue
+        reason = ""
+        if not nc["enabled"]:
+            reason = "Net Control automation disabled"
+        elif not nc["announcements"]["enabled"]:
+            reason = "scheduled announcements disabled"
+        elif not exercise:
+            reason = "LIVE mode: exercise announcements stopped"
+        else:
+            reason = announcement_problem(item["message"], nc)
+        if reason:
+            _mark(automation, target, item["key"], "skipped", now, reason)
+            log_automation(AUTO_ANNOUNCEMENT_SKIPPED, {"schedule_event": item["key"], "reason": reason})
+            continue
+        messages.append(item["message"])
+        _mark(automation, target, item["key"], "sent", now)
+        automation["last_transmission"] = {"time": now.isoformat(timespec="seconds"), "text": item["message"],
+                                           "event": item["key"]}
+        log_automation(AUTO_ANNOUNCEMENT, {"schedule_event": item["key"], "outgoing": item["message"]})
+
+    _, end = exercise_window()
+    fired = (automation["fired"].get(sid) or {}).get(target, {})
+    done = automation["completed"].setdefault(sid, [])
+    if items and end and now >= end and all(i["key"] in fired for i in items) and target not in done:
+        done.append(target)
+        log_automation(AUTO_SCHEDULE_COMPLETED, {"reason": "exercise ended; no scheduled announcements remain"})
+    save_automation(automation)
+    return messages
+
+
+def send_announcement(key, now=None, target=None):
+    """Explicitly send one configured announcement (e.g. a per-event Timed Event). Returns messages."""
+    now = now or datetime.now(LOCAL_TZ)
+    target = target or automation_target()
+    automation = load_automation()
+    nc, _ = net_control_config(automation=automation)
+    items = {i["key"]: i for i in build_schedule(nc)[0]} if nc else {}
+    item = items.get(key)
+    reason = ""
+    if nc is None:
+        reason = "Net Control automation not configured"
+    elif item is None:
+        reason = f"unknown announcement '{key}'; configured: {', '.join(items) or 'none'}"
+    elif not nc["enabled"]:
+        reason = "Net Control automation disabled"
+    elif not is_exercise(load_state()):
+        reason = "LIVE mode: exercise announcements stopped"
+    else:
+        _, end = exercise_window()
+        if end and now >= end + timedelta(minutes=nc["late_grace_minutes"]):
+            reason = "exercise completed; no announcements after the end"
+        else:
+            reason = announcement_problem(item["message"], nc)
+    if reason:
+        log_automation(AUTO_ANNOUNCEMENT_SKIPPED, {"schedule_event": key, "reason": reason, "source": "cli"})
+        return [], reason
+    _mark(automation, target, key, "sent", now)
+    automation["last_transmission"] = {"time": now.isoformat(timespec="seconds"), "text": item["message"], "event": key}
+    save_automation(automation)
+    log_automation(AUTO_ANNOUNCEMENT, {"schedule_event": key, "outgoing": item["message"], "source": "cli"})
+    return [item["message"]], ""
+
+
+def queue_manual_announcement(key, now=None):
+    """Panel: queue a configured announcement for the next --schedule-check run(s)."""
+    now = now or datetime.now(LOCAL_TZ)
+    overview = schedule_overview(now)
+    if not overview["configured"]:
+        return False, "Net Control automation is not configured."
+    item = next((i for i in overview["items"] if i["key"] == key), None)
+    if item is None:
+        return False, "Unknown announcement."
+    nc = overview["config"]
+    if not nc["enabled"]:
+        return False, "Net Control automation is disabled."
+    if not is_exercise(load_state()):
+        return False, "LIVE mode: exercise announcements cannot be sent."
+    if overview["status"] == "COMPLETED":
+        return False, "Exercise completed; no announcements after the end."
+    problem = announcement_problem(item["message"], nc)
+    if problem:
+        return False, f"Not queued: {problem}."
+    automation = load_automation()
+    automation["manual_queue"].append({"key": key, "message": item["message"],
+                                       "queued_at": now.isoformat(timespec="seconds"), "sent_targets": []})
+    save_automation(automation)
+    log_event("automation", "web-panel", item["message"],
+              {"event": "AUTO ANNOUNCEMENT QUEUED", "schedule_event": key, "source": "panel"})
+    return True, f"Queued '{item['label']}'. It is sent on the next schedule check (about 1 minute) by each Timed Event target."
+
+
+def update_automation_overrides(values):
+    """Panel: validate and store local overrides. Returns (ok, message)."""
+    clean = {}
+    for key in ("enabled", "auto_checkin_ack", "announcements_enabled"):
+        if key in values:
+            clean[key] = bool(values[key])
+    for key in ("name", "operator_name", "callsign"):
+        if key in values:
+            value = normalize(values[key] or "").upper()
+            error = identity_error(value, 16 if key == "callsign" else 40)
+            if error:
+                return False, f"{key.replace('_', ' ').title()} {error}."
+            clean[key] = value
+    if "location_override" in values:
+        value = normalize(values["location_override"] or "").upper()
+        error = location_error(value) if value else ""
+        if error:
+            return False, f"Location override {error}."
+        clean["location_override"] = value
+    automation = load_automation()
+    automation["overrides"].update(clean)
+    save_automation(automation)
+    log_event("automation", "web-panel", json.dumps(clean, sort_keys=True),
+              {"event": AUTO_SETTINGS_CHANGED, "source": "panel"})
+    return True, "Net Control settings saved (local overrides; config file unchanged)."
+
+
+def clear_automation_overrides():
+    automation = load_automation()
+    automation["overrides"] = {}
+    save_automation(automation)
+    log_event("automation", "web-panel", "overrides cleared", {"event": AUTO_SETTINGS_CHANGED, "source": "panel"})
+    return "Net Control overrides cleared; config file values apply."
+
+
+def automation_on_mode_change(mode):
+    """Switching to LIVE drops any queued exercise announcements immediately."""
+    if mode != "live":
+        return
+    automation = load_automation()
+    if automation["manual_queue"]:
+        dropped = len(automation["manual_queue"])
+        automation["manual_queue"] = []
+        save_automation(automation)
+        log_event("automation", "", f"{dropped} queued announcement(s) dropped",
+                  {"event": AUTO_ANNOUNCEMENT_SKIPPED, "reason": "switched to LIVE mode"})
+
+
 SERIALIZED_LINE_RE = re.compile(r"^(R|P|W|EMERGENCY)\s*\|", re.I)
 
 
@@ -1327,6 +2127,14 @@ def handle_message():
     state = load_state()
     if not message:
         emit(f"{mode_label(state['mode'])} EmComm Control ready. No MESSAGE received.")
+        return
+    if CHECKIN_LINE_RE.match(message):
+        # Compact pipe-format line ('SET R | NET CONTROL | <STATION> | CHECKIN | ...').
+        # Net Control automation answers valid check-ins; anything else in this
+        # format is ignored silently so relayed lines never trigger HELP.
+        response = handle_net_checkin(message, state)
+        if response:
+            emit(response)
         return
     prefix, body = strip_prefix(message)
     if prefix and is_serialized_line(body):
@@ -1386,6 +2194,7 @@ def set_mode(mode, confirm_live=False):
         state["exercise"] = EXERCISE_NAME
     save_state(state)
     log_event("mode_change", "", f"{previous} -> {mode}")
+    automation_on_mode_change(mode)
     emit(f"EmComm Control mode changed to {mode_label(mode)}.")
 
 
@@ -1589,6 +2398,37 @@ def station_rows(records=None):
     return result
 
 
+def automation_status_report(now=None):
+    """Plain status for --automation-status (uses 'status', never 'response', so it is not transmitted)."""
+    now = now or datetime.now(LOCAL_TZ)
+    overview = schedule_overview(now)
+    if not overview["configured"]:
+        return {"status": overview["status"], "warnings": overview["warnings"]}
+    nc = overview["config"]
+    place, source = resolve_location(nc)
+    return {
+        "status": overview["status"],
+        "identity": net_control_identity(nc),
+        "enabled": nc["enabled"], "auto_checkin_ack": nc["auto_checkin_ack"],
+        "announcements_enabled": nc["announcements"]["enabled"],
+        "effective_location": place, "location_source": source,
+        "upcoming": [f"{i['time'].strftime('%Y-%m-%d %H:%M')} {i['key']}: {i['message']}" for i in overview["upcoming"]],
+        "warnings": overview["warnings"],
+        "last_transmission": load_automation().get("last_transmission"),
+    }
+
+
+AUTOMATION_FIELDS = [
+    "time", "mode", "event", "schedule_event", "target", "source", "network", "channel",
+    "participant", "incoming", "outgoing", "location_source", "effective_location", "reason", "checkin_layout",
+]
+
+
+def automation_rows(records=None):
+    records = read_log_records() if records is None else records
+    return [r for r in records if r.get("kind") == "automation"]
+
+
 def captured_rows(records=None):
     records = read_log_records() if records is None else records
     return [dict(r, message=r.get("message", "")) for r in records if r.get("kind") == "capture"]
@@ -1641,6 +2481,8 @@ def export_bundle(out_dir=None):
     _write_csv(out / "formal_traffic.csv", FORMAL_TRAFFIC_FIELDS, formal)
     _write_csv(out / "stations.csv", STATION_FIELDS, stations)
     _write_csv(out / "captured_messages.csv", CAPTURE_FIELDS, captured)
+    automation = automation_rows(records)
+    _write_csv(out / "automation_log.csv", AUTOMATION_FIELDS, automation)
 
     by_prec = {}
     for row in formal:
@@ -1672,6 +2514,11 @@ def export_bundle(out_dir=None):
             + f"; {stats['relayed']} relayed\n"
         )
         f.write(f"Captured mesh messages: {len(captured)}\n")
+        if automation:
+            counts = {}
+            for row in automation:
+                counts[row.get("event", "")] = counts.get(row.get("event", ""), 0) + 1
+            f.write("Net Control automation: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())) + "\n")
         f.write(f"Total logged events: {state.get('events', 0)}\n")
         if by_prec:
             f.write("Formal traffic by precedence (all logged): "
@@ -1703,6 +2550,13 @@ def main():
     parser.add_argument("--reset", action="store_true", help="Reset counters/state while preserving current mode.")
     parser.add_argument("--checkout", help="Remove a callsign from the roster (local correction).")
     parser.add_argument(
+        "--schedule-check", action="store_true",
+        help="Net Control automation: send any configured announcement due now (run every minute from a Timed Event).",
+    )
+    parser.add_argument("--announcement", metavar="EVENT", help="Send one configured Net Control announcement, e.g. start, end, prestart-60.")
+    parser.add_argument("--automation-status", action="store_true", help="Print Net Control automation status (never transmitted).")
+    parser.add_argument("--target", help="Name for this Timed Event target in automation bookkeeping (default: derived from MeshMonitor).")
+    parser.add_argument(
         "--capture", action="store_true",
         help="Silently log the inbound MESSAGE (catch-all Auto Responder rule). Never transmits.",
     )
@@ -1717,6 +2571,25 @@ def main():
     ])
     if selected > 1:
         emit("Choose only one administrative action at a time.")
+        return
+    automation_actions = sum([args.schedule_check, args.announcement is not None, args.automation_status])
+    if automation_actions:
+        if selected or args.capture or automation_actions > 1:
+            print(json.dumps({"status": "Choose only one action at a time."}))
+            return
+        if args.schedule_check:
+            messages = run_schedule_check(target=args.target)
+            if messages:
+                emit(messages)
+        elif args.announcement is not None:
+            messages, reason = send_announcement(normalize(args.announcement).lower(), target=args.target)
+            if messages:
+                emit(messages)
+            else:
+                # Never transmit an error from an automation action; report locally only.
+                print(json.dumps({"status": f"not sent: {reason}"}))
+        else:
+            print(json.dumps(automation_status_report(), indent=2))
         return
     if args.capture:
         if selected:

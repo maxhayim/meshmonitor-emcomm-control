@@ -29,7 +29,7 @@ from urllib.parse import parse_qs, quote, urlsplit
 
 import mm_emcomm_control as control
 
-PANEL_VERSION = "2.5.0"
+PANEL_VERSION = "2.6.0"
 DEFAULT_HOST = os.getenv("MM_EMCOMM_PANEL_HOST", "127.0.0.1")
 DEFAULT_PORT = int(os.getenv("MM_EMCOMM_PANEL_PORT", "8787"))
 DEFAULT_TOKEN = os.getenv("MM_EMCOMM_PANEL_TOKEN", "")
@@ -81,6 +81,7 @@ def panel_change_mode(mode):
         f"{previous} -> {mode}",
         {"source": "operator_control_panel"},
     )
+    control.automation_on_mode_change(mode)
     return f"Mode changed to {mode_name(mode)}."
 
 
@@ -205,6 +206,27 @@ def formal_traffic_recent(limit=25, records=None):
 
 
 STATUS_LABELS = {"logged": "Logged", "relayed": "Relayed", "delivered": "Delivered"}
+
+
+def fmt_time(value):
+    """Local 12-hour clock time for display, e.g. '10:00 AM'."""
+    if not value:
+        return ""
+    moment = value if not isinstance(value, str) else control._parse_time(value)
+    if moment is None:
+        return str(value)
+    return moment.astimezone(control.LOCAL_TZ).strftime("%I:%M %p").lstrip("0")
+
+
+def length_cell(text, nc=None):
+    rep = control.length_report(text)
+    cls = "bad-text" if rep["over_limit"] else ("warn-text" if rep["over_recommended"] else "")
+    note = ""
+    if rep["over_limit"]:
+        note = " — over limit, will not be sent" if not (nc and nc.get("allow_long_messages")) else " — sent in parts (allow_long_messages)"
+    elif rep["over_recommended"]:
+        note = " — over 120 recommended"
+    return f'<span class="{cls}">{rep["length"]} / {rep["limit"]}{esc(note)}</span>'
 
 
 def esc(value):
@@ -410,6 +432,147 @@ class Handler(BaseHTTPRequestHandler):
         {out}
         </section>"""
 
+    def automation_card(self, state):
+        overview = control.schedule_overview(state=state)
+        if not overview["configured"]:
+            warnings = "".join(f"<li>{esc(w)}</li>" for w in overview["warnings"])
+            return (
+                '<section class="card"><h2>Net Control Automation</h2>'
+                '<p><strong>Net Control Automation: OFF</strong> — not configured.</p>'
+                '<p class="muted">Add an optional <code>net_control</code> block to <code>mm_emcomm_config.json</code> '
+                'to enable scheduled exercise announcements and automatic check-in ACKs. See docs/net-control.md.</p>'
+                + (f'<ul class="bad-text">{warnings}</ul>' if warnings else "") + "</section>"
+            )
+        nc = overview["config"]
+        automation = control.load_automation()
+        place, source = control.resolve_location(nc, state)
+        onoff = lambda v: "ON" if v else "OFF"  # noqa: E731
+        upcoming = overview["upcoming"]
+        next_item = upcoming[0] if upcoming else None
+        last = automation.get("last_transmission")
+        last_text = "None"
+        if last:
+            last_text = f"{fmt_time(last.get('time'))} — {last.get('text', '')}"
+        rows = [
+            ("Net Control Automation", onoff(nc["enabled"])),
+            ("Net Control Name", nc["name"] or "—"),
+            ("Operator Name", nc["operator_name"] or "—"),
+            ("Callsign", nc["callsign"] or "—"),
+            ("Display Identity", control.net_control_identity(nc)),
+            ("Auto Check-In ACK", onoff(nc["auto_checkin_ack"]) + (" (exercise window only)" if nc["checkin_ack_window"] == "exercise" else " (any time in EXERCISE mode)")),
+            ("Scheduled Announcements", onoff(nc["announcements"]["enabled"])),
+            ("Location Mode", nc["location"]["mode"].upper()),
+            ("Detected Location", control.detected_location_text(nc, automation, state)),
+            ("SET Location Override", nc["location"]["override"] or "—"),
+            ("Effective Location", f"{place} ({source})" if place else "None — ACKs say RECEIVED without a location"),
+            ("Exercise Style", control.exercise_style()["name"]),
+            ("Next Scheduled Announcement", f"{fmt_time(next_item['time'])} — {next_item['label']}" if next_item else "None"),
+            ("Last Automatic Transmission", last_text),
+            ("Schedule Status", overview["status"]),
+            ("Timed Event targets seen", ", ".join(f"{t} ({fmt_time(v)})" for t, v in automation["targets"].items()) or "None yet — add the --schedule-check Timed Event"),
+        ]
+        status_rows = "".join(f"<tr><th>{esc(k)}</th><td>{esc(v)}</td></tr>" for k, v in rows)
+        completed = (
+            '<div class="notice good">Exercise completed — no scheduled announcements remaining.</div>'
+            if overview["status"] == "COMPLETED" else ""
+        )
+        warnings = "".join(f"<li>{esc(w)}</li>" for w in overview["warnings"])
+        upcoming_rows = "".join(
+            f"<tr><td>{esc(fmt_time(i['time']))}</td><td>{esc(i['label'])}</td><td>{esc(i['message'])}</td>"
+            f"<td>{length_cell(i['message'], nc)}</td></tr>"
+            for i in upcoming
+        ) or '<tr><td colspan="4" class="muted">None</td></tr>'
+        handled = {}
+        for fired in ((automation["fired"].get(control.schedule_id()) or {}).values()):
+            for key, info in fired.items():
+                handled.setdefault(key, []).append(info.get("status", ""))
+        configured_rows = "".join(
+            f"<tr><td>{esc(fmt_time(i['time']))}</td><td><code>{esc(i['key'])}</code></td><td>{esc(i['label'])}</td>"
+            f"<td>{esc(', '.join(sorted(set(handled.get(i['key'], [])))) or 'pending')}</td><td>{length_cell(i['message'], nc)}</td></tr>"
+            for i in overview["items"]
+        ) or '<tr><td colspan="5" class="muted">No announcements configured.</td></tr>'
+        history = [r for r in control.automation_rows() if r.get("event")][-12:]
+        history_rows = "".join(
+            f"<tr><td>{esc(fmt_time(r.get('time')))}</td><td>{esc(r.get('event'))}</td><td>{esc(r.get('schedule_event') or r.get('participant') or '')}</td>"
+            f"<td>{esc(r.get('outgoing') or r.get('incoming') or '')}</td><td>{esc(r.get('reason') or '')}</td></tr>"
+            for r in reversed(history)
+        ) or '<tr><td colspan="5" class="muted">No automatic activity yet.</td></tr>'
+        options = "".join(
+            f'<option value="{esc(i["key"])}">{esc(fmt_time(i["time"]))} — {esc(i["label"])}</option>' for i in overview["items"]
+        )
+        chk = lambda v: " checked" if v else ""  # noqa: E731
+        manual = (
+            f'<form method="post" action="/automation/preview" class="actions"><select name="key">{options}</select>'
+            '<button class="primary" type="submit">Preview announcement</button></form>'
+            if options else '<p class="muted">No configured announcements to send.</p>'
+        )
+        return f"""
+        <section class="card"><h2>Net Control Automation</h2>
+        {completed}
+        <div class="scroll"><table>{status_rows}</table></div>
+        {f'<ul class="bad-text">{warnings}</ul>' if warnings else ''}
+        <h3>Upcoming Automatic Messages</h3>
+        <div class="scroll"><table><thead><tr><th>Time</th><th>Event</th><th>Message</th><th>Length</th></tr></thead><tbody>{upcoming_rows}</tbody></table></div>
+        <p class="muted">Items leave this list once sent (or skipped). History stays in the log and the after-action export.</p>
+        <h3>Recent automatic activity</h3>
+        <div class="scroll"><table><thead><tr><th>Time</th><th>Type</th><th>Event / station</th><th>Text</th><th>Reason</th></tr></thead><tbody>{history_rows}</tbody></table></div>
+        <h3>Send a configured announcement</h3>
+        {manual}
+        <p class="muted">The panel cannot transmit by itself: a confirmed announcement is queued and sent by the next <code>--schedule-check</code> Timed Event run (about 1 minute) on each target. EXERCISE mode only.</p>
+        <h3>Local settings</h3>
+        <form method="post" action="/automation/settings">
+          <input type="hidden" name="form" value="1">
+          <div class="formgrid">
+            <div><label><input type="checkbox" name="enabled" value="1" style="width:auto"{chk(nc['enabled'])}> Net Control automation</label></div>
+            <div><label><input type="checkbox" name="auto_checkin_ack" value="1" style="width:auto"{chk(nc['auto_checkin_ack'])}> Auto check-in ACK</label></div>
+            <div><label><input type="checkbox" name="announcements_enabled" value="1" style="width:auto"{chk(nc['announcements']['enabled'])}> Scheduled announcements</label></div>
+            <div><label for="nc-name">Net Control name</label><input id="nc-name" name="name" value="{esc(nc['name'])}"></div>
+            <div><label for="nc-op">Operator name</label><input id="nc-op" name="operator_name" value="{esc(nc['operator_name'])}"></div>
+            <div><label for="nc-call">Callsign</label><input id="nc-call" name="callsign" value="{esc(nc['callsign'])}"></div>
+            <div class="wide"><label for="nc-loc">SET location override (place name, never coordinates)</label><input id="nc-loc" name="location_override" value="{esc(nc['location']['override'])}"></div>
+          </div>
+          <div class="actions"><button class="primary" type="submit">Save settings</button></div>
+        </form>
+        <form method="post" action="/automation/clear" class="actions"><button type="submit">Clear local overrides</button></form>
+        <p class="muted">Saved as local overrides in automation.json; the config file is not rewritten. Inbound mesh messages can never change these settings.</p>
+        </section>"""
+
+    def announcement_preview(self, key):
+        overview = control.schedule_overview()
+        item = next((i for i in overview.get("items", []) if i["key"] == key), None)
+        if not overview["configured"] or item is None:
+            return self.layout("Preview", '<section class="card"><h1>Unknown announcement</h1><a href="/">Return</a></section>')
+        nc = overview["config"]
+        state = control.load_state()
+        rep = control.length_report(item["message"])
+        problem = control.announcement_problem(item["message"], nc)
+        targets = ", ".join(control.load_automation()["targets"]) or "none seen yet (add the --schedule-check Timed Event)"
+        style = control.exercise_style()
+        rows = [
+            ("Event Name", f"{item['label']} ({item['key']})"),
+            ("Scheduled time", fmt_time(item["time"])),
+            ("Message", item["message"]),
+            ("Character Count", f"{rep['length']} / {rep['limit']} {rep['warning']}"),
+            ("Network/Channel target", f"Channel configured on each --schedule-check Timed Event: {targets}"),
+            ("Mode", control.mode_label(state.get("mode"))),
+            ("SET-safe", "ON (no TEST)" if style["name"] == "set-safe" else "OFF (standard style)"),
+        ]
+        table = "".join(f"<tr><th>{esc(k)}</th><td>{esc(v)}</td></tr>" for k, v in rows)
+        blocked = problem or (
+            "LIVE mode: exercise announcements cannot be sent." if not control.is_exercise(state)
+            else "Exercise completed; no announcements after the end." if overview["status"] == "COMPLETED"
+            else "Net Control automation is disabled." if not nc["enabled"] else ""
+        )
+        action = (
+            f'<div class="notice bad">{esc(blocked)}</div>' if blocked else
+            f'<form method="post" action="/automation/send"><input type="hidden" name="key" value="{esc(key)}">'
+            '<input type="hidden" name="confirmed" value="yes"><button class="danger" type="submit">Yes — queue this announcement</button></form>'
+        )
+        return self.layout(
+            "Preview",
+            f'<section class="card narrow"><h1>Send announcement?</h1><table>{table}</table><div class="actions">{action}<a class="button" href="/">Cancel</a></div></section>',
+        )
+
     def dashboard(self, message="", form=None, result=None):
         state = control.load_state()
         mode = state.get("mode", "exercise")
@@ -502,13 +665,14 @@ class Handler(BaseHTTPRequestHandler):
           <div class="card"><div class="muted">Captured messages</div><div class="metric">{int(state.get('captured',0))}</div></div>
           <div class="card"><div class="muted">Logged events</div><div class="metric">{int(state.get('events',0))}</div></div>
         </section>
+        {self.automation_card(state)}
         {self.compose_card(mode, form, result)}
         <section class="card"><h2>Formal traffic log</h2><div class="scroll"><table><thead><tr><th>ID</th><th>Prec</th><th>2. To</th><th>3. From</th><th>4. Subject</th><th>7. Message</th><th>RE</th><th>Relays</th><th>Status</th><th>Received</th></tr></thead><tbody>{formal_rows}</tbody></table></div><p class="muted">IDs are internal EmComm Control identifiers, not NTS message numbers. A logged ACK confirms receipt by EmComm Control, not delivery. <strong>Delivered</strong> means a station sent <code>EMCOMM RCVD &lt;ID&gt;</code>; it is operator-reported.</p></section>
         <section class="card"><h2>Station activity</h2><div class="scroll"><table><thead><tr><th>Station</th><th>Check-ins</th><th>SITREPs</th><th>Traffic sent</th><th>Relays</th><th>Receipts</th><th>Captured</th><th>Avg SNR</th><th>Hops</th><th>Last heard</th></tr></thead><tbody>{activity_rows}</tbody></table></div><p class="muted">Stations are labeled by checked-in callsign when known, otherwise by node name or ID. SNR and hops come from MeshMonitor receive data.</p></section>
         <section class="card"><h2>Captured mesh messages</h2><div class="scroll"><table><thead><tr><th>Time</th><th>From</th><th>Ch</th><th>SNR</th><th>Hops</th><th>Message</th></tr></thead><tbody>{capture_rows}</tbody></table></div><p class="muted">Silent capture of ordinary messages via the optional catch-all rule. Nothing is transmitted. MeshMonitor's own message history remains the authoritative record.</p></section>
         <section class="card"><h2>Check-ins</h2><div class="scroll"><table><thead><tr><th>Callsign</th><th>Location</th><th>Power</th><th>Role</th><th>Last check-in</th><th>Actions</th></tr></thead><tbody>{station_rows}</tbody></table></div><p class="muted">Removing a station only corrects the roster; it does not notify the station and can be redone by checking in again.</p></section>
         <section class="card"><h2>Recent operational log</h2><div class="scroll"><table><thead><tr><th>Time</th><th>Mode</th><th>Type</th><th>Source</th><th>Details</th></tr></thead><tbody>{event_rows}</tbody></table></div></section>
-        <section class="card"><h2>After-action export</h2><p class="muted">Download the current roster, full traffic/event log, formal traffic with delivery status, station activity, and captured messages as CSV for drill or incident review.</p><div class="actions"><a class="button primary" href="/export/roster.csv">Download roster CSV</a><a class="button primary" href="/export/traffic.csv">Download traffic log CSV</a><a class="button primary" href="/export/formal_traffic.csv">Download formal traffic CSV</a><a class="button primary" href="/export/stations.csv">Download station activity CSV</a><a class="button primary" href="/export/captured_messages.csv">Download captured messages CSV</a></div></section>
+        <section class="card"><h2>After-action export</h2><p class="muted">Download the current roster, full traffic/event log, formal traffic with delivery status, station activity, and captured messages as CSV for drill or incident review.</p><div class="actions"><a class="button primary" href="/export/roster.csv">Download roster CSV</a><a class="button primary" href="/export/traffic.csv">Download traffic log CSV</a><a class="button primary" href="/export/formal_traffic.csv">Download formal traffic CSV</a><a class="button primary" href="/export/stations.csv">Download station activity CSV</a><a class="button primary" href="/export/captured_messages.csv">Download captured messages CSV</a><a class="button primary" href="/export/automation_log.csv">Download automation log CSV</a></div></section>
         <section class="card"><h2>Operational note</h2><p>This panel changes EmComm Control state and displays its local logs. It does not replace an EOC incident-management, dispatch, CAD, records, or approved emergency communications system, the official ICS-213 form, Winlink forms, or NTS radiogram software.</p><p class="muted">For LAN access, run with an access token and place the panel only on a trusted management network or behind an authenticated TLS reverse proxy.</p></section>
         """
         nonce = secrets.token_urlsafe(16)
@@ -585,6 +749,9 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/export/traffic.csv":
             self.send_csv("emcomm_traffic_log.csv", build_csv(control.read_log_records(), control.TRAFFIC_LOG_FIELDS))
             return
+        if parsed.path == "/export/automation_log.csv":
+            self.send_csv("emcomm_automation_log.csv", build_csv(control.automation_rows(), control.AUTOMATION_FIELDS))
+            return
         if parsed.path == "/export/stations.csv":
             self.send_csv("emcomm_stations.csv", build_csv(control.station_rows(), control.STATION_FIELDS))
             return
@@ -658,6 +825,32 @@ class Handler(BaseHTTPRequestHandler):
                 self.redirect("/?msg=" + quote(msg))
             except Exception as exc:
                 self.send_html(self.layout("Error", f'<section class="card"><h1>Reset failed</h1><p>{esc(exc)}</p><a href="/">Return</a></section>'), status=500)
+            return
+        if parsed.path == "/automation/settings":
+            values = {key: fields.get(key, [""])[0] for key in ("name", "operator_name", "callsign", "location_override")}
+            for key in ("enabled", "auto_checkin_ack", "announcements_enabled"):
+                values[key] = fields.get(key, [""])[0] == "1"
+            ok, msg = control.update_automation_overrides(values)
+            if ok:
+                self.redirect("/?msg=" + quote(msg))
+            else:
+                self.send_html(self.layout("Refused", f'<section class="card"><h1>Settings not saved</h1><p>{esc(msg)}</p><a href="/">Return</a></section>'), status=400)
+            return
+        if parsed.path == "/automation/clear":
+            self.redirect("/?msg=" + quote(control.clear_automation_overrides()))
+            return
+        if parsed.path == "/automation/preview":
+            self.send_html(self.announcement_preview(fields.get("key", [""])[0]))
+            return
+        if parsed.path == "/automation/send":
+            if fields.get("confirmed", [""])[0] != "yes":
+                self.send_html(self.layout("Refused", '<section class="card"><h1>Confirmation required</h1><a href="/">Return</a></section>'), status=400)
+                return
+            ok, msg = control.queue_manual_announcement(fields.get("key", [""])[0])
+            if ok:
+                self.redirect("/?msg=" + quote(msg))
+            else:
+                self.send_html(self.layout("Refused", f'<section class="card"><h1>Not queued</h1><p>{esc(msg)}</p><a href="/">Return</a></section>'), status=400)
             return
         if parsed.path == "/traffic/compose":
             form = {k: v[0] for k, v in fields.items() if v}

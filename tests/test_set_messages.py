@@ -33,6 +33,11 @@ def env(monkeypatch):
 
 @pytest.fixture
 def apply(monkeypatch):
+    # Pin the clock to mid-SET so results never depend on the real date
+    # (START/END are fixed 2026 times); individual tests may move it.
+    monkeypatch.setattr(control, "datetime", _FixedDatetime)
+    monkeypatch.setattr(_FixedDatetime, "value", START + timedelta(minutes=30))
+
     def _apply(nc):
         monkeypatch.setitem(control.CONFIG, "net_control", nc)
         monkeypatch.setitem(control.CONFIG, "start", START.isoformat())

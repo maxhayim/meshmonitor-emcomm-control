@@ -29,7 +29,7 @@ from urllib.parse import parse_qs, quote, urlsplit
 
 import mm_emcomm_control as control
 
-PANEL_VERSION = "2.6.0"
+PANEL_VERSION = "2.7.0"
 DEFAULT_HOST = os.getenv("MM_EMCOMM_PANEL_HOST", "127.0.0.1")
 DEFAULT_PORT = int(os.getenv("MM_EMCOMM_PANEL_PORT", "8787"))
 DEFAULT_TOKEN = os.getenv("MM_EMCOMM_PANEL_TOKEN", "")
@@ -501,11 +501,32 @@ class Handler(BaseHTTPRequestHandler):
             f'<option value="{esc(i["key"])}">{esc(fmt_time(i["time"]))} — {esc(i["label"])}</option>' for i in overview["items"]
         )
         chk = lambda v: " checked" if v else ""  # noqa: E731
-        manual = (
-            f'<form method="post" action="/automation/preview" class="actions"><select name="key">{options}</select>'
-            '<button class="primary" type="submit">Preview announcement</button></form>'
-            if options else '<p class="muted">No configured announcements to send.</p>'
+        set_closed = overview["status"] == "COMPLETED"
+        if set_closed:
+            manual = '<p class="muted">This SET has ended; manual announcements are closed.</p>'
+        else:
+            manual = (
+                f'<form method="post" action="/automation/preview" class="actions"><select name="key">{options}</select>'
+                '<button class="primary" type="submit">Preview announcement</button></form>'
+                if options else '<p class="muted">No configured announcements to send.</p>'
+            )
+        ann = nc["announcements"]
+        lock = " disabled" if set_closed else ""
+        set_editors = "".join(
+            f'<div class="wide"><label><input type="checkbox" name="{group}_enabled" value="1" style="width:auto"'
+            f'{chk(ann[group]["enabled"])}{lock}> {title}</label>'
+            f'<textarea name="{group}_message" rows="2" data-count="1"{lock}>{esc(ann[group]["message"])}</textarea>'
+            f'<div class="muted">{hint} {length_cell(ann[group]["message"], nc) if ann[group]["message"] else ""}</div></div>'
+            for group, title, hint in (
+                ("set_start", "SET start message", "Sent once when the SET begins."),
+                ("set_end", "SET end message", "Sent once when the SET ends."),
+            )
         )
+        set_fields = (
+            '<p class="muted">This SET has ended — its start/end messages, channel selection and manual sends are closed. '
+            'Edit the config file to set up a new SET.</p>' if set_closed else '<input type="hidden" name="set_fields" value="1">'
+        )
+        channel_text = ", ".join(nc["channels"])
         return f"""
         <section class="card"><h2>Net Control Automation</h2>
         {completed}
@@ -530,7 +551,12 @@ class Handler(BaseHTTPRequestHandler):
             <div><label for="nc-op">Operator name</label><input id="nc-op" name="operator_name" value="{esc(nc['operator_name'])}"></div>
             <div><label for="nc-call">Callsign</label><input id="nc-call" name="callsign" value="{esc(nc['callsign'])}"></div>
             <div class="wide"><label for="nc-loc">SET location override (place name, never coordinates)</label><input id="nc-loc" name="location_override" value="{esc(nc['location']['override'])}"></div>
+            {set_editors}
+            <div class="wide"><label for="nc-ch">SET channels (blank = any; e.g. <code>0</code>, <code>meshtastic:0</code>, <code>meshcore:1</code>)</label>
+            <input id="nc-ch" name="channels" value="{esc(channel_text)}"{lock}>
+            <div class="muted">Automatic messages and check-in ACKs are only sent on these channels. MeshMonitor picks the channel per Timed Event / incoming message; on other channels EmComm Control stays silent. Meshtastic Timed Events need <code>--channel N</code> in their arguments.</div></div>
           </div>
+          {set_fields}
           <div class="actions"><button class="primary" type="submit">Save settings</button></div>
         </form>
         <form method="post" action="/automation/clear" class="actions"><button type="submit">Clear local overrides</button></form>
@@ -830,6 +856,11 @@ class Handler(BaseHTTPRequestHandler):
             values = {key: fields.get(key, [""])[0] for key in ("name", "operator_name", "callsign", "location_override")}
             for key in ("enabled", "auto_checkin_ack", "announcements_enabled"):
                 values[key] = fields.get(key, [""])[0] == "1"
+            if fields.get("set_fields", [""])[0] == "1":
+                for group in ("set_start", "set_end"):
+                    values[f"{group}_message"] = fields.get(f"{group}_message", [""])[0]
+                    values[f"{group}_enabled"] = fields.get(f"{group}_enabled", [""])[0] == "1"
+                values["channels"] = fields.get("channels", [""])[0]
             ok, msg = control.update_automation_overrides(values)
             if ok:
                 self.redirect("/?msg=" + quote(msg))

@@ -3,7 +3,7 @@
 #   name: EmComm Control
 #   emoji: 🚨
 #   language: Python
-__version__ = "2.6.0"
+__version__ = "2.7.0"
 
 """
 EmComm Control for MeshMonitor.
@@ -1265,7 +1265,8 @@ def handle_track(body, state):
 # System responses that may echo back on a MeshCore channel; captured but flagged.
 SYSTEM_ECHO_RE = re.compile(
     r"^(TEST|LIVE|EXERCISE) (ACK|RCVD|RELAY|TRACK|STATUS|TRAFFIC|PART|CHECKOUT|ANNOUNCEMENT|TACTICAL)\b"
-    r"|^(TEST EXERCISE|EXERCISE) INJECT \d|^((TEST|SET) )?(P|R|W|EMERGENCY) \| ",
+    r"|^(TEST EXERCISE|EXERCISE) INJECT \d|^((TEST|SET) )?(P|R|W|EMERGENCY) \| "
+    r"|^SET (START|COMPLETE|END) \| ",
 )
 
 
@@ -1428,9 +1429,23 @@ def parse_net_control(raw, max_len=None):
         "dedup_window_minutes": number(raw, "dedup_window_minutes", 3, "net_control", 1, 120),
         "late_grace_minutes": number(raw, "late_grace_minutes", 10, "net_control", 1, 60),
         "allow_long_messages": flag(raw, "allow_long_messages", False, "net_control"),
+        "channels": [],
         "announcements": {"enabled": False, "before_start": [], "at_start": None, "during": None,
-                          "before_end": [], "at_end": None},
+                          "before_end": [], "at_end": None,
+                          "set_start": {"enabled": False, "message": ""},
+                          "set_end": {"enabled": False, "message": ""}},
     }
+
+    channels = raw.get("channels") or []
+    if not isinstance(channels, list):
+        warnings.append("net_control.channels must be a list such as [\"0\"] or [\"meshcore:1\"]; ignored.")
+        channels = []
+    for entry in channels:
+        value = normalize_channel(entry)
+        if value is None:
+            warnings.append(f"net_control.channels entry {entry!r} must look like 0, meshtastic:0 or meshcore:1; ignored.")
+        elif value not in nc["channels"]:
+            nc["channels"].append(value)
 
     ann_raw = raw.get("announcements") or {}
     if not isinstance(ann_raw, dict):
@@ -1472,6 +1487,21 @@ def parse_net_control(raw, max_len=None):
         text = message(item, f"net_control.announcements.{group}")
         if text is not None:
             ann[group] = {"message": text}
+    for group in ("set_start", "set_end"):
+        item = ann_raw.get(group)
+        if item is None:
+            continue
+        path = f"net_control.announcements.{group}"
+        if not isinstance(item, dict):
+            warnings.append(f"{path} must be an object; ignored.")
+            continue
+        enabled = flag(item, "enabled", False, path)
+        text = item.get("message")
+        text = normalize(text) if isinstance(text, str) else ""
+        if enabled and not text:
+            warnings.append(f"{path} is enabled but has no message; it will not be sent.")
+            enabled = False
+        ann[group] = {"enabled": enabled, "message": text}
     during = ann_raw.get("during")
     if during is not None:
         if not isinstance(during, dict):
@@ -1498,7 +1528,45 @@ def announcement_texts(nc):
     ann = nc["announcements"]
     texts = [i["message"] for i in ann["before_start"] + ann["before_end"]]
     texts += [ann[k]["message"] for k in ("at_start", "during", "at_end") if ann[k]]
+    texts += [ann[k]["message"] for k in ("set_start", "set_end") if ann[k]["enabled"]]
     return texts
+
+
+CHANNEL_RE = re.compile(r"^(?:(meshtastic|meshcore):)?(\d{1,2})$")
+
+
+def normalize_channel(value):
+    """'0', 0, 'meshtastic:0', 'MeshCore:1' -> canonical string, or None if invalid."""
+    if isinstance(value, bool):
+        return None
+    m = CHANNEL_RE.match(normalize(str(value)).lower())
+    if not m:
+        return None
+    return f"{m.group(1)}:{int(m.group(2))}" if m.group(1) else str(int(m.group(2)))
+
+
+def current_network():
+    return "meshcore" if is_meshcore() else "meshtastic"
+
+
+def channel_allowed(nc):
+    """Is this run's channel one of the channels selected for the SET? (Unrestricted if none selected.)
+
+    MeshMonitor decides where output goes (the Timed Event's or the incoming
+    message's channel); the script can only stay silent on channels that are
+    not selected. Meshtastic Timed Events do not pass CHANNEL, so they need
+    '--channel N' in the event's arguments.
+    """
+    selected = nc.get("channels") or []
+    if not selected:
+        return True, ""
+    channel = normalize(os.getenv("CHANNEL", ""))
+    if not channel:
+        return False, "channel unknown: add --channel N to the Timed Event arguments"
+    network = current_network()
+    if channel in selected or f"{network}:{channel}" in selected:
+        return True, ""
+    return False, f"{network} channel {channel} is not selected for this SET"
 
 
 def identity_error(value, limit=40):
@@ -1563,7 +1631,8 @@ def save_automation(data):
 
 
 OVERRIDE_KEYS = ("enabled", "auto_checkin_ack", "announcements_enabled",
-                 "name", "operator_name", "callsign", "location_override")
+                 "name", "operator_name", "callsign", "location_override",
+                 "set_start_enabled", "set_start_message", "set_end_enabled", "set_end_message", "channels")
 
 
 def net_control_config(cfg=None, automation=None):
@@ -1587,6 +1656,15 @@ def net_control_config(cfg=None, automation=None):
             nc[key] = normalize(overrides[key]).upper()
     if isinstance(overrides.get("location_override"), str) and not location_error(overrides["location_override"]):
         nc["location"]["override"] = normalize(overrides["location_override"]).upper()
+    for group in ("set_start", "set_end"):
+        if isinstance(overrides.get(f"{group}_message"), str):
+            nc["announcements"][group]["message"] = normalize(overrides[f"{group}_message"])
+        if isinstance(overrides.get(f"{group}_enabled"), bool):
+            nc["announcements"][group]["enabled"] = overrides[f"{group}_enabled"]
+        if nc["announcements"][group]["enabled"] and not nc["announcements"][group]["message"]:
+            nc["announcements"][group]["enabled"] = False
+    if isinstance(overrides.get("channels"), list):
+        nc["channels"] = [c for c in (normalize_channel(v) for v in overrides["channels"]) if c]
     return nc, warnings
 
 
@@ -1755,6 +1833,11 @@ def handle_net_checkin(message, state, now=None):
     if not is_exercise(state):
         log_automation(AUTO_ACK_BLOCKED_LIVE, dict(base, reason="LIVE mode: exercise check-ins are not acknowledged"))
         return None
+    if os.getenv("IS_DIRECT", "").lower() != "true":
+        channel_ok, channel_reason = channel_allowed(nc)
+        if not channel_ok:
+            log_automation(AUTO_ACK_SKIPPED, dict(base, reason=channel_reason))
+            return None
     start, end = exercise_window()
     if nc["checkin_ack_window"] == "exercise" and start and not start <= now < end:
         reason = "before exercise start" if now < start else "after exercise end"
@@ -1796,7 +1879,8 @@ def handle_net_checkin(message, state, now=None):
     automation["last_transmission"] = {"time": now.isoformat(timespec="seconds"), "text": ack, "event": AUTO_CHECKIN_ACK}
     save_automation(automation)
     log_automation(AUTO_CHECKIN_ACK, dict(base, outgoing=ack, location_source=source if place and not note else "none",
-                                          effective_location=place if not note else "", reason=note))
+                                          effective_location=place if not note else "", reason=note,
+                                          system_generated=True))
     return ack
 
 
@@ -1829,7 +1913,8 @@ def build_schedule(nc, cfg=None):
     """Concrete announcement list for the configured exercise window. Returns (items, warnings)."""
     start, end = exercise_window(cfg)
     ann = nc["announcements"] if nc else None
-    if not nc or not any([ann["before_start"], ann["at_start"], ann["during"], ann["before_end"], ann["at_end"]]):
+    if not nc or not any([ann["before_start"], ann["at_start"], ann["during"], ann["before_end"], ann["at_end"],
+                          ann["set_start"]["enabled"], ann["set_end"]["enabled"]]):
         return [], []
     if not start:
         return [], ["Announcements need valid exercise 'start' and 'end' times (end after start)."]
@@ -1852,6 +1937,13 @@ def build_schedule(nc, cfg=None):
     if ann["at_end"]:
         items.append({"key": "end", "kind": "at_end", "label": "Exercise complete", "time": end,
                       "message": ann["at_end"]["message"]})
+    # SET start/end messages: sent only when the SET begins / ends.
+    if ann["set_start"]["enabled"]:
+        items.append({"key": "set-start", "kind": "set_start", "label": "SET start (net open)", "time": start,
+                      "message": ann["set_start"]["message"], "order": 0})
+    if ann["set_end"]["enabled"]:
+        items.append({"key": "set-end", "kind": "set_end", "label": "SET end (net closed)", "time": end,
+                      "message": ann["set_end"]["message"], "order": 9})
     if ann["during"]:
         explicit = {i["time"] for i in items}
         interval = ann["during"]["interval_minutes"]
@@ -1862,7 +1954,8 @@ def build_schedule(nc, cfg=None):
                 items.append({"key": f"during-{offset}", "kind": "during", "label": "Exercise in progress",
                               "time": moment, "message": ann["during"]["message"]})
             offset += interval
-    items.sort(key=lambda i: (i["time"], i["key"]))
+    # Same-minute order: SET start message first, SET end message last.
+    items.sort(key=lambda i: (i["time"], i.get("order", 5), i["key"]))
     return items, warnings
 
 
@@ -1940,6 +2033,7 @@ def run_schedule_check(now=None, target=None):
         save_automation(automation)
         return messages
     exercise = is_exercise(state)
+    channel_ok, channel_reason = channel_allowed(nc)
 
     # Operator-queued manual announcements (from the local panel).
     queue = []
@@ -1951,13 +2045,14 @@ def run_schedule_check(now=None, target=None):
             queue.append(item)
             continue
         problem = "LIVE mode" if not exercise else ("Net Control automation disabled" if not nc["enabled"]
-                                                     else announcement_problem(item["message"], nc))
+                                                     else channel_reason or announcement_problem(item["message"], nc))
         if problem:
             log_automation(AUTO_ANNOUNCEMENT_SKIPPED, {"schedule_event": item["key"], "source": "panel",
                                                       "reason": problem, "outgoing": ""})
         else:
             messages.append(item["message"])
-            log_automation(AUTO_ANNOUNCEMENT, {"schedule_event": item["key"], "source": "panel", "outgoing": item["message"]})
+            log_automation(AUTO_ANNOUNCEMENT, {"schedule_event": item["key"], "source": "panel", "outgoing": item["message"],
+                                               "system_generated": True})
             automation["last_transmission"] = {"time": now.isoformat(timespec="seconds"), "text": item["message"],
                                                "event": item["key"]}
         item.setdefault("sent_targets", []).append(target)
@@ -1983,6 +2078,8 @@ def run_schedule_check(now=None, target=None):
             reason = "scheduled announcements disabled"
         elif not exercise:
             reason = "LIVE mode: exercise announcements stopped"
+        elif not channel_ok:
+            reason = channel_reason
         else:
             reason = announcement_problem(item["message"], nc)
         if reason:
@@ -1993,7 +2090,8 @@ def run_schedule_check(now=None, target=None):
         _mark(automation, target, item["key"], "sent", now)
         automation["last_transmission"] = {"time": now.isoformat(timespec="seconds"), "text": item["message"],
                                            "event": item["key"]}
-        log_automation(AUTO_ANNOUNCEMENT, {"schedule_event": item["key"], "outgoing": item["message"]})
+        log_automation(AUTO_ANNOUNCEMENT, {"schedule_event": item["key"], "outgoing": item["message"],
+                                           "system_generated": True})
 
     _, end = exercise_window()
     fired = (automation["fired"].get(sid) or {}).get(target, {})
@@ -2022,6 +2120,8 @@ def send_announcement(key, now=None, target=None):
         reason = "Net Control automation disabled"
     elif not is_exercise(load_state()):
         reason = "LIVE mode: exercise announcements stopped"
+    elif not channel_allowed(nc)[0]:
+        reason = channel_allowed(nc)[1]
     else:
         _, end = exercise_window()
         if end and now >= end + timedelta(minutes=nc["late_grace_minutes"]):
@@ -2034,7 +2134,8 @@ def send_announcement(key, now=None, target=None):
     _mark(automation, target, key, "sent", now)
     automation["last_transmission"] = {"time": now.isoformat(timespec="seconds"), "text": item["message"], "event": key}
     save_automation(automation)
-    log_automation(AUTO_ANNOUNCEMENT, {"schedule_event": key, "outgoing": item["message"], "source": "cli"})
+    log_automation(AUTO_ANNOUNCEMENT, {"schedule_event": key, "outgoing": item["message"], "source": "cli",
+                                       "system_generated": True})
     return [item["message"]], ""
 
 
@@ -2085,6 +2186,30 @@ def update_automation_overrides(values):
         if error:
             return False, f"Location override {error}."
         clean["location_override"] = value
+    set_keys = ("set_start_enabled", "set_start_message", "set_end_enabled", "set_end_message", "channels")
+    if any(k in values for k in set_keys) and schedule_overview().get("status") == "COMPLETED":
+        return False, "This SET has ended; its automated messages and controls are closed. Edit the config file for a new SET."
+    for group, title in (("set_start", "SET start message"), ("set_end", "SET end message")):
+        if f"{group}_message" in values:
+            text = normalize(values[f"{group}_message"] or "")
+            enabled = bool(values.get(f"{group}_enabled"))
+            if enabled and not text:
+                return False, f"{title} is enabled but empty."
+            if text:
+                nc_now, _ = net_control_config()
+                problem = announcement_problem(text, nc_now or {"allow_long_messages": False})
+                if problem:
+                    return False, f"{title}: {problem}."
+            clean[f"{group}_message"] = text
+        if f"{group}_enabled" in values:
+            clean[f"{group}_enabled"] = bool(values[f"{group}_enabled"])
+    if "channels" in values:
+        raw = values["channels"]
+        entries = [e for e in re.split(r"[,\s]+", raw) if e] if isinstance(raw, str) else list(raw or [])
+        parsed = [normalize_channel(e) for e in entries]
+        if None in parsed:
+            return False, "Channels must look like 0, meshtastic:0 or meshcore:1 (comma separated)."
+        clean["channels"] = list(dict.fromkeys(parsed))
     automation = load_automation()
     automation["overrides"].update(clean)
     save_automation(automation)
@@ -2166,6 +2291,11 @@ def handle_message():
         response = handle_track(body, state)
     elif re.match(r"^STATUS\b", body, re.I):
         response = handle_status(state)
+    elif "|" in body:
+        # Pipe-format broadcast such as 'SET START | NET OPEN | ...' (including an
+        # echo of this system's own SET start/end message): not a command, and
+        # answering it with HELP could loop. Stay silent.
+        return
     else:
         response = help_text(state)
     emit(response)
@@ -2421,6 +2551,7 @@ def automation_status_report(now=None):
 AUTOMATION_FIELDS = [
     "time", "mode", "event", "schedule_event", "target", "source", "network", "channel",
     "participant", "incoming", "outgoing", "location_source", "effective_location", "reason", "checkin_layout",
+    "system_generated",
 ]
 
 
@@ -2556,6 +2687,7 @@ def main():
     parser.add_argument("--announcement", metavar="EVENT", help="Send one configured Net Control announcement, e.g. start, end, prestart-60.")
     parser.add_argument("--automation-status", action="store_true", help="Print Net Control automation status (never transmitted).")
     parser.add_argument("--target", help="Name for this Timed Event target in automation bookkeeping (default: derived from MeshMonitor).")
+    parser.add_argument("--channel", help="Channel this Timed Event sends to (Meshtastic Timed Events do not pass CHANNEL); used for the SET channel selection.")
     parser.add_argument(
         "--capture", action="store_true",
         help="Silently log the inbound MESSAGE (catch-all Auto Responder rule). Never transmits.",
@@ -2573,6 +2705,12 @@ def main():
         emit("Choose only one administrative action at a time.")
         return
     automation_actions = sum([args.schedule_check, args.announcement is not None, args.automation_status])
+    if args.channel is not None:
+        channel = normalize_channel(args.channel)
+        if channel is None or ":" in channel:
+            print(json.dumps({"status": "--channel must be a channel number, e.g. --channel 0"}))
+            return
+        os.environ["CHANNEL"] = channel
     if automation_actions:
         if selected or args.capture or automation_actions > 1:
             print(json.dumps({"status": "Choose only one action at a time."}))

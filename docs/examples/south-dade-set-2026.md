@@ -128,17 +128,24 @@ These are **example/local exercise settings**. Use the settings your own exercis
 
 ## Net Control automation: example schedule
 
-With one MeshMonitor **Timed Event** per network running `mm_emcomm_control.py --schedule-check` every minute (`* * * * *`, exercise channel), the config above sends:
+Automation is limited to the SET channels `meshtastic:0` (primary channel) and `meshcore:0` (Public). Set up one MeshMonitor **Timed Event** per network, running every minute (`* * * * *`) on that channel:
+
+- **Meshtastic:** arguments `--schedule-check --channel 0`. Meshtastic Timed Events don't pass the channel.
+- **MeshCore:** arguments `--schedule-check`.
+
+The config above then sends:
 
 | Time | Announcement |
 |---|---|
 | 08:00 | WARNING: SET EXERCISE BEGINS IN 1 HOUR. MESHTASTIC + MESHCORE USERS WELCOME. |
 | 08:45 | WARNING: SET EXERCISE BEGINS IN 15 MINUTES. PREPARE FOR EXERCISE TRAFFIC. |
+| 09:00 | SET START \| NET OPEN \| ALL STATIONS PLEASE USE THE SET MESSAGE TEMPLATE \| NET CONTROL ACTIVE |
 | 09:00 | WARNING: SET EXERCISE IS NOW IN PROGRESS. SIMULATED TRAFFIC ONLY. |
 | 10:00 | WARNING: SET EXERCISE IN PROGRESS UNTIL 12PM. SIMULATED TRAFFIC ONLY. |
 | 11:00 | WARNING: SET EXERCISE IN PROGRESS UNTIL 12PM. SIMULATED TRAFFIC ONLY. |
 | 11:45 | SET EXERCISE ENDS IN 15 MINUTES. FINAL TRAFFIC AND CHECKOUTS MAY BE SENT. |
 | 12:00 | SET EXERCISE COMPLETE. THANK YOU FOR PARTICIPATING. |
+| 12:00 | SET COMPLETE \| NET CLOSED \| THANK YOU TO ALL STATIONS FOR PARTICIPATING \| RETURNING CHANNEL TO NORMAL TRAFFIC |
 
 - **No 12:00 periodic warning:** the hourly warning stops before the end.
 - **After 12:00:** no announcements are sent, the panel's Upcoming list is empty, and status is **COMPLETED**.

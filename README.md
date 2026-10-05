@@ -446,6 +446,8 @@ Disabled unless a `net_control` block in `mm_emcomm_config.json` enables it. It 
   - The location is an exercise-specific override, or Net Control's own check-in location. If neither is known, the reply just says `RECEIVED`.
   - **Exact GPS coordinates are never transmitted.**
   - The ACK confirms reception only.
+- **SET start / end messages:** optional net-open and net-closed messages (`set_start` / `set_end`), each with its own switch and editable in the panel. Each is sent once, exactly when the SET begins or ends; restarts never cause a repeat. They are logged as system-generated traffic.
+- **SET channels:** `channels` limits automation to the channels selected for the SET. After the SET ends, its automation and panel controls close.
 - **Safety:** exact `CHECKIN` subject match only, never replies to `CHECKIN ACK` or to Net Control itself, duplicate suppression (packet ID or short-lived hash), and SET-safe wording.
 
 MeshMonitor setup:
@@ -600,6 +602,7 @@ This project follows semantic versioning in the same style as `meshmonitor-radio
 - **v2.1.0** — adds the optional browser Operator Control Panel for one-click LIVE / EXERCISE switching and operational status
 - **v2.2.0** — adds roster checkout, traffic precedence, and after-action CSV export (CLI and panel)
 - **v2.3.0** — compressed ICS-213 / NTS-style formal traffic, TEST validation, replies, relays, multipart, 133-character default limit, generic exercise configuration
+- **v2.7.0** — SET start/end (net open/closed) messages, SET channel selection, post-SET lock
 - **v2.6.0** — optional Net Control automation: scheduled exercise announcements and automatic SET check-in ACKs
 - **v2.5.0** — configurable exercise marking: `set-safe` style (`SET R` + `EXERCISE`) for shared networks with TEST-triggered bots
 - **v2.4.0** — message tracking: delivery receipts (`RCVD`), status queries (`TRACK`), optional silent capture of mesh traffic, receive metadata (SNR/hops/channel), per-station activity summary
